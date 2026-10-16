@@ -3,6 +3,11 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
+import os
+import subprocess
+import sys
+import time
+from unittest.mock import patch
 import unittest
 
 from engineering_platform import genesis_authority as authority, genesis_contract as contract, server
@@ -18,6 +23,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         self.data = self.root / "server"
         self.instance = server.initialize(self.data).instance_id
+        service.initialize(self.data, expected_instance=self.instance)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir(mode=0o700)
         self.bundle = json.loads(FIXTURE.read_text())
@@ -55,6 +61,177 @@ class GenesisOwnerFixture(unittest.TestCase):
             with authority.store(self.data) as db:
                 authority.authenticate(db, self.grant["credential"], self.headers)
         self.assertFalse((self.workspace / "foreign-target").exists())
+
+    def test_real_local_commit_uses_root_relative_manifest_from_pinned_metadata(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        _, original = contract.request(self.original_request)
+        known = worker.create(scope)
+        known.update(worker.write_files(scope, known, original.files))
+        known.update(worker.git_initialize(scope, known, original.files))
+        known.update(worker.prepare_commit(scope, known, original.files, 1792134000))
+        known.update(worker.commit_object(scope, known))
+        known.update(worker.commit_ref(scope, known))
+        result = worker.verify_commit(scope, known, original.files)
+        self.assertTrue(result["committed_declaration_verified"])
+        self.assertEqual(set(result["committed_files"]), set(original.files))
+        self.assertEqual(result["commit"], known["commit"])
+
+    def _admitted_committed(self):
+        from engineering_platform import genesis_worker as worker
+        service.initialize(self.data, expected_instance=self.instance)
+        service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        _, original = contract.request(self.original_request)
+        known = worker.create(scope)
+        known.update(worker.write_files(scope, known, original.files))
+        known.update(worker.git_initialize(scope, known, original.files))
+        known.update(worker.prepare_commit(scope, known, original.files, 1792134000))
+        known.update(worker.commit_object(scope, known))
+        known.update(worker.commit_ref(scope, known))
+        known.update(worker.verify_commit(scope, known, original.files))
+        with authority.store(self.data, write=True) as db:
+            row = service._row(db, "synthetic-operation", self.grant["credential"])
+            row["evidence"]["known"] = known
+            row["evidence"]["completed_steps"] = list(service.STEPS)
+            row["state"] = "EXECUTING"
+            service._save(db, row, self.grant["credential"])
+        return scope, known
+
+    def test_changed_git_after_verification_cannot_register(self):
+        self._admitted_committed()
+        head = self.workspace / "new-repository/.git/HEAD"
+        head.write_text("ref: refs/heads/foreign\n")
+        with self.assertRaises(contract.BootstrapError):
+            service.execute(self.data, operation_id="synthetic-operation", token=self.grant["credential"], headers=self.headers)
+        with authority.store(self.data) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0], 0)
+
+    def test_unidentified_spawn_is_stopped_and_primary_failure_retained(self):
+        service.initialize(self.data, expected_instance=self.instance)
+        service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
+        children = []
+        original_popen = subprocess.Popen
+        def spawned(*args, **kwargs):
+            child = original_popen(*args, **kwargs)
+            children.append(child)
+            return child
+        try:
+            with service._lock(self.data, "synthetic-operation") as lock_fd:
+                with patch.object(service.genesis_native, "runtime", return_value=Path(sys.executable)), \
+                     patch.object(service.genesis_native, "command", return_value=(sys.executable, "-I", "-c", "import sys; sys.stdin.buffer.read()")), \
+                     patch.object(service, "capture_process_identity", return_value=None), \
+                     patch.object(service.subprocess, "Popen", side_effect=spawned):
+                    with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_HOST_IDENTITY_UNAVAILABLE"):
+                        service._execute_step(self.data, operation_id="synthetic-operation", step="PREFLIGHT",
+                            token=self.grant["credential"], headers=self.headers, source_identity=None, lock_fd=lock_fd)
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll())
+            self.assertEqual(len(list((self.data / "genesis-local-v1/evidence").glob("*.stdout"))), 1)
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=5)
+
+    def test_changed_target_git_filter_never_executes_during_prepare(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        _, original = contract.request(self.original_request)
+        known = worker.create(scope)
+        known.update(worker.write_files(scope, known, original.files))
+        known.update(worker.git_initialize(scope, known, original.files))
+        root = self.workspace / "new-repository"
+        marker = root / "forbidden-filter-effect"
+        original_verify = worker.verify_files
+        def race_after_verified(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            with (root / ".git/config").open("a") as config:
+                config.write('[filter "probe"]\n\tclean = touch forbidden-filter-effect; cat\n')
+            (root / ".gitattributes").write_text("* filter=probe\n")
+            return result
+        try:
+            with patch.object(worker, "verify_files", side_effect=race_after_verified):
+                worker.prepare_commit(scope, known, original.files, 1792134000)
+        except contract.BootstrapError:
+            pass
+        self.assertFalse(marker.exists(), "Git clean filter executed after file/config guard")
+
+    def test_new_target_replacement_is_never_adopted(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        original_open = os.open
+        original_mkdir = os.mkdir
+        swapped = []
+        def replacement(path, flags, *args, **kwargs):
+            if path == scope["target_name"] and "dir_fd" in kwargs and not swapped:
+                parent = kwargs["dir_fd"]
+                os.rename(path, path + ".original", src_dir_fd=parent, dst_dir_fd=parent)
+                original_mkdir(path, 0o700, dir_fd=parent)
+                swapped.append(True)
+            return original_open(path, flags, *args, **kwargs)
+        with patch.object(worker.os, "open", side_effect=replacement):
+            with self.assertRaises(contract.BootstrapError):
+                worker.create(scope)
+        self.assertTrue(swapped)
+        self.assertEqual(list((self.workspace / "new-repository").iterdir()), [])
+
+    def test_initialized_bootstrap_evidence_is_finitely_preserved_in_reset(self):
+        from engineering_platform import central_operational_reset as reset
+        service.initialize(self.data, expected_instance=self.instance)
+        _, preserved, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
+        self.assertNotIn("genesis-local-v1", unknown)
+        self.assertNotIn("genesis-local-v1.identity.json", unknown)
+        self.assertTrue(any(row["path"] == "genesis-local-v1.identity.json" and row["effect"] == "PRESERVE" for row in preserved))
+        (self.data / "genesis-local-v1/unknown-business-file").write_text("foreign")
+        _, _, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
+        self.assertIn("genesis-local-v1/unknown-business-file", unknown)
+
+    def test_prepared_publication_refuses_existing_and_foreign_capabilities(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        target = self.workspace / scope["target_name"]
+        target.mkdir(mode=0o700)
+        (target / "foreign").write_text("preserved")
+        with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_TARGET_EXISTS"):
+            worker.create(scope)
+        self.assertEqual((target / "foreign").read_text(), "preserved")
+        self.assertTrue(Path(scope["staging_path"]).exists())
+        prepared = Path(scope["staging_path"])
+        prepared.rename(prepared.with_name(prepared.name + ".original"))
+        prepared.mkdir(mode=0o700)
+        with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_PREPARED_CAPABILITY_CHANGED"):
+            worker.create(scope)
+
+    def test_actual_pipe_upload_deadline_and_maintenance_lock(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            with os.fdopen(write_fd, "wb", buffering=0) as stream:
+                before = time.monotonic()
+                with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_HOST_DEADLINE"):
+                    service._write(stream, b"x" * 524288, before + 0.05)
+                self.assertLess(time.monotonic() - before, 1)
+        finally:
+            os.close(read_fd)
+        self.assertFalse(service.maintenance_activity(self.data))
+        with service._lock(self.data, "synthetic-operation"):
+            self.assertTrue(service.maintenance_activity(self.data))
+        self.assertFalse(service.maintenance_activity(self.data))
+
+    def test_valid_current_committed_capability_registers_once(self):
+        self._admitted_committed()
+        service.execute(self.data, operation_id="synthetic-operation", token=self.grant["credential"], headers=self.headers)
+        result = service.read(self.data, operation_id="synthetic-operation", token=self.grant["credential"], headers=self.headers)
+        self.assertEqual(result["state"], "COMPLETE")
+        service.execute(self.data, operation_id="synthetic-operation", token=self.grant["credential"], headers=self.headers)
+        with authority.store(self.data) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_local_repository_bindings").fetchone()[0], 1)
 
     def test_corrupt_operation_cannot_claim_complete_without_commit_or_B8R(self):
         service.initialize(self.data, expected_instance=self.instance)

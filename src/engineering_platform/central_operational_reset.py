@@ -169,6 +169,7 @@ _KNOWN_TOP_LEVEL = frozenset({
     "operational-installation.json", "legacy-installation-adoption.json",
     "development-profile.json", "dependabot-producer-heartbeat.json",
     "central.sqlite", ".forge-ep-consumer-recovery.lock",
+    "genesis-local-v1", "genesis-local-v1.identity.json",
 })
 _VERSIONED_RECOVERY_BACKUP = re.compile(
     r"epdata\.sqlite\.pre-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.backup"
@@ -1002,6 +1003,11 @@ def _walk_preserved_files(
                     raise OperationalResetError(code)
                 if stat.S_ISDIR(metadata.st_mode):
                     relative = path.relative_to(directory).as_posix()
+                    if root_name == "genesis-local-v1" and not (
+                        relative in {"anchor", "evidence", "locks"}
+                        or re.fullmatch(r"anchor/stage-[0-9a-f]{32}", relative)
+                    ):
+                        raise OperationalResetError("GENESIS_PRIVATE_SHAPE_UNKNOWN")
                     classification = _opaque_update_directory_classification(
                         root_name, path, relative,
                         expected_installation_id=expected_installation_id,
@@ -1081,6 +1087,12 @@ def _nested_preserved_classification(
 ) -> str | None:
     """Classify only product-owned shapes inside preserved top-level roots."""
     parts = Path(relative).parts
+    if root_name == "genesis-local-v1":
+        if len(parts) == 2 and parts[0] == "evidence" and re.fullmatch(r"[0-9a-f]{32}\.(?:stdout|stderr|cleanup\.json)", parts[1]):
+            return "GENESIS_ORIGINAL_EFFECT_EVIDENCE"
+        if len(parts) == 2 and parts[0] == "locks" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lock", parts[1]):
+            return "GENESIS_RESOURCE_OWNERSHIP"
+        return None
     if root_name == "runtime":
         if relative in {
             "store-authority.json", "engineering-dashboard-relay",
@@ -1218,7 +1230,7 @@ def _external_inventory_bound(
         preserved.append(entry)
         if path.is_dir() and not path.is_symlink() and path.name in {
             "runtime", "operations", "recovery", "migration", "backups",
-            "operational-reset-archive",
+            "operational-reset-archive", "genesis-local-v1",
         }:
             nested_files, opaque_boundaries = _walk_preserved_files(
                 path, root_name=path.name, code="EXTERNAL_SYMLINK_UNSAFE",
@@ -1286,6 +1298,10 @@ def _external_inventory(
 
 
 def _runtime_activity(data_root: Path) -> dict[str, object]:
+    if (data_root / "genesis-local-v1").exists() or (data_root / "genesis-local-v1.identity.json").exists():
+        from .genesis_service import maintenance_activity
+        if maintenance_activity(data_root):
+            return {"active": True, "reason": "GENESIS_HOST_ACTIVE_OR_UNCERTAIN"}
     try:
         payload = json.loads((data_root / "runtime.json").read_text(encoding="utf-8"))
     except FileNotFoundError:

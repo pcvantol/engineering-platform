@@ -16,9 +16,11 @@ import subprocess
 import sys
 import time
 import signal
+import ctypes
+import errno
 
 from .genesis_contract import BootstrapError, bundle, canonical, digest, load, MAX_BODY, VALIDATOR_SHA256
-from .preproject_inspection import directory, identity, selected_bytes, inventory
+from .preproject_inspection import directory, identity, selected_bytes, inventory, read_relative
 from .repository_attachment import parse_repository_attachment
 from .effect_workspace import child_environment
 
@@ -45,17 +47,37 @@ def target(scope: dict, known: dict):
 
 
 def create(scope: dict) -> dict:
-    with directory(Path(scope["workspace_root"])) as parent:
+    staging = Path(scope["staging_path"])
+    with directory(staging.parent) as source, directory(staging) as prepared, directory(Path(scope["workspace_root"])) as parent:
+        if (list(identity(os.fstat(prepared))) != scope["staging_identity"]
+                or list(identity(os.fstat(source))) != scope["staging_parent_identity"] or os.listdir(prepared)):
+            raise BootstrapError("BOOTSTRAP_PREPARED_CAPABILITY_CHANGED", 409)
         if list(identity(os.fstat(parent))) != scope["root_identity"]:
             raise BootstrapError("BOOTSTRAP_PARENT_CHANGED", 409)
-        # Never interpret a concurrent creator as our interrupted operation.
-        os.mkdir(scope["target_name"], 0o700, dir_fd=parent)
+        if os.fstat(prepared).st_dev != os.fstat(parent).st_dev or sys.platform != "darwin":
+            raise BootstrapError("BOOTSTRAP_ATOMIC_PUBLICATION_UNSUPPORTED", 422)
+        # Darwin's no-replace rename publishes the already owner-provisioned
+        # inode. mkdir does not return an inode and cannot establish this proof.
+        # No copy/delete, replacement, or exists-check fallback is permitted.
+        library = ctypes.CDLL(None, use_errno=True)
+        rename = library.renameatx_np
+        rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        rename.restype = ctypes.c_int
+        if rename(source, os.fsencode(staging.name), parent, os.fsencode(scope["target_name"]), 0x4):
+            code = ctypes.get_errno()
+            if code == errno.EEXIST:
+                raise BootstrapError("BOOTSTRAP_TARGET_EXISTS", 409)
+            raise BootstrapError("BOOTSTRAP_ATOMIC_PUBLICATION_UNAVAILABLE", 422)
         fd = os.open(scope["target_name"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         try:
             info = os.fstat(fd)
-            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise BootstrapError("BOOTSTRAP_TARGET_UNSAFE", 409)
+            if identity(info) != identity(os.fstat(prepared)):
+                raise BootstrapError("BOOTSTRAP_TARGET_OWNERSHIP_UNCERTAIN", 409)
+            with directory(Path(scope["workspace_root"])) as fresh:
+                if identity(os.fstat(fresh)) != identity(os.fstat(parent)):
+                    raise BootstrapError("BOOTSTRAP_PARENT_CHANGED", 409)
             os.fsync(parent)
+            os.fsync(source)
             return {"target_identity": list(identity(info))}
         finally:
             os.close(fd)
@@ -235,6 +257,36 @@ def _git_guard(scope: dict, known: dict) -> None:
             os.close(metadata)
 
 
+def git_snapshot(scope: dict, known: dict) -> dict:
+    """Finite, no-follow physical/content binding of the verified metadata.
+
+    CENTRAL compares this original observation without launching Git while
+    holding its transaction. Unknown files and metadata replacements differ.
+    """
+    observations = {}
+    total = 0
+    deadline = time.monotonic() + 3
+    with target(scope, known) as root:
+        metadata = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        try:
+            if list(identity(os.fstat(metadata))) != known["git_identity"]:
+                raise BootstrapError("BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN", 409)
+            entries = inventory(metadata, deadline=deadline, maximum=256)
+            for name, info in sorted(entries.items()):
+                if stat.S_ISDIR(info[2]):
+                    observations[name] = {"identity": list(info[:2]), "kind": "directory"}
+                    continue
+                raw = read_relative(metadata, name, maximum=262144, deadline=deadline)
+                sha = digest(raw)
+                total += len(raw)
+                if total > 2097152:
+                    raise BootstrapError("BOOTSTRAP_GIT_METADATA_CAPACITY", 409)
+                observations[name] = {"identity": list(info[:2]), "sha256": sha}
+        finally:
+            os.close(metadata)
+    return observations
+
+
 def git_initialize(scope: dict, known: dict, files: dict) -> dict:
     if known.get("git_identity"):
         _git_guard(scope, known)
@@ -261,8 +313,28 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
     _git_guard(scope, known)
     verify_files(scope, known, files, git=True)
     root = _git_root(scope)
-    _git(root, "add", "--", *sorted(files), known=known)
-    tree = _git(root, "write-tree", known=known).decode().strip()
+    # Object/index plumbing consumes only the admitted bytes. `git add` can
+    # execute a target-configured clean filter after an earlier file guard.
+    hierarchy = {}
+    for name, raw in sorted(files.items()):
+        node = hierarchy
+        parts = name.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        object_id = _git(root, "hash-object", "--no-filters", "-w", "--stdin", known=known, input_bytes=raw).decode().strip()
+        expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        if object_id != expected:
+            raise BootstrapError("BOOTSTRAP_BLOB_CONFLICT", 409)
+        node[parts[-1]] = object_id
+    def write_tree(node):
+        entries = []
+        for name, value in sorted(node.items()):
+            if isinstance(value, dict):
+                entries.append(b"040000 tree " + write_tree(value).encode() + b"\t" + name.encode() + b"\0")
+            else:
+                entries.append(b"100644 blob " + value.encode() + b"\t" + name.encode() + b"\0")
+        return _git(root, "mktree", "-z", known=known, input_bytes=b"".join(entries)).decode().strip()
+    tree = write_tree(hierarchy)
     declaration = b"tree " + tree.encode() + b"\nauthor Engineering Platform Bootstrap <bootstrap@localhost> "
     author = str(accepted_at).encode() + b" +0000"
     raw = declaration + author + b"\ncommitter Engineering Platform Bootstrap <bootstrap@localhost> " + author
@@ -305,6 +377,7 @@ def commit_ref(scope: dict, known: dict) -> dict:
 def verify_commit(scope: dict, known: dict, files: dict) -> dict:
     _git_guard(scope, known)
     verify_files(scope, known, files, git=True)
+    before = git_snapshot(scope, known)
     root = _git_root(scope)
     if _git(root, "rev-parse", "HEAD", known=known).decode().strip() != known["commit"]:
         raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
@@ -325,9 +398,12 @@ def verify_commit(scope: dict, known: dict, files: dict) -> dict:
     if set(observed) != set(files) or _git(root, "rev-parse", "HEAD^{tree}", known=known).decode().strip() != known["tree"]:
         raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
     declaration = parse_repository_attachment(load(files[".engineering-platform/repository.json"]))
+    if before != git_snapshot(scope, known):
+        raise BootstrapError("BOOTSTRAP_GIT_CHANGED_DURING_VERIFICATION", 409)
     return {"committed_files": observed, "project_id": declaration.project_id,
         "repository_id": declaration.repository_id, "authority_repository_id": declaration.authority_repository_id,
-        "commit": known["commit"], "tree": known["tree"], "committed_declaration_verified": True}
+        "commit": known["commit"], "tree": known["tree"], "committed_declaration_verified": True,
+        "verified_git_snapshot": before}
 
 
 def main() -> int:

@@ -20,6 +20,7 @@ import signal
 import sqlite3
 import stat
 import subprocess
+import sys
 import time
 
 from . import genesis_authority as authority, genesis_native, project_topology, local_repository_binding
@@ -234,6 +235,26 @@ def _line(stream, deadline: float) -> bytes:
     raise BootstrapError("BOOTSTRAP_HOST_OUTPUT_LIMIT", 409)
 
 
+def _write(stream, payload: bytes, deadline: float) -> None:
+    """Upload has the same finite deadline as startup/readback, even at EAGAIN."""
+    fd = stream.fileno()
+    os.set_blocking(fd, False)
+    pending = memoryview(payload)
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_WRITE)
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise BootstrapError("BOOTSTRAP_HOST_DEADLINE", 409)
+            try:
+                written = os.write(fd, pending)
+            except BlockingIOError:
+                continue
+            if written <= 0:
+                raise BootstrapError("BOOTSTRAP_HOST_ENDED_WITHOUT_RECEIPT", 409)
+            pending = pending[written:]
+
+
 def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: dict, source_identity, lock_fd: int) -> dict:
     path, marker = _private(root)
     native = genesis_native.runtime()
@@ -253,12 +274,14 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
     target = Path(scope["workspace_root"]) / scope["target_name"]
     command = genesis_native.command(native=native, anchor=path / "anchor", target=target,
         writable=mutating, git_metadata=step.startswith("GIT_"), readable=(Path(scope["validator_path"]), Path(__file__).resolve().parent.parent),
+        prepared=Path(scope["staging_path"]) if step == "CREATE_TARGET" else None,
         profile_id="ep-genesis-"+attempt["attempt_id"])
     stderr_path = path / "evidence" / (attempt["attempt_id"]+".stderr")
     stdout_path = path / "evidence" / (attempt["attempt_id"]+".stdout")
     process = None
     process_identity = None
     records = bytearray()
+    deadline = time.monotonic()+30
     try:
         with stderr_path.open("xb") as errors:
             stderr_path.chmod(0o600)
@@ -271,8 +294,7 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
                 fresh = _row(db, operation_id, token)
                 fresh["evidence"]["attempts"][-1]["process"] = asdict(process_identity)
                 _save(db, fresh, token)
-            process.stdin.write(canonical(job)); process.stdin.flush()
-            deadline = time.monotonic()+30
+            _write(process.stdin, canonical(job), deadline)
             ready_raw = _line(process.stdout, deadline); records.extend(ready_raw)
             ready = load(ready_raw)
             if ready != {"state": "STEP_READY", "job_digest": digest(canonical(job))}:
@@ -284,7 +306,11 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
                 fresh = _row(db, operation_id, token); _require_original(fresh, current_grant, current_scope)
                 if current_scope != scope:
                     raise BootstrapError("BOOTSTRAP_SCOPE_CHANGED", 403)
-                process.stdin.write(b"EXECUTE\n"); process.stdin.flush()
+                try:
+                    if os.write(process.stdin.fileno(), b"EXECUTE\n") != 8:
+                        raise BootstrapError("BOOTSTRAP_PERMIT_NOT_DELIVERED", 409)
+                except BlockingIOError as error:
+                    raise BootstrapError("BOOTSTRAP_PERMIT_NOT_DELIVERED", 409) from error
                 fresh["evidence"]["attempts"][-1]["state"] = "STEP_PERMITTED"
                 _save(db, fresh, token)
             process.stdin.close()
@@ -303,18 +329,42 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
                 _save(db, fresh, token)
             return result["result"]
     finally:
+        primary = sys.exc_info()[1]
+        cleanup_errors = []
         if process is not None:
-            if process.poll() is None and process_identity is not None and verify_process_identity(process_identity) == "MATCH":
-                os.killpg(process.pid, signal.SIGKILL)
+            # Releasing stdin first lets an unpermitted, unidentified own child
+            # stop at EOF. No PID-only group kill can target a reused process.
+            try:
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+            except OSError as error:
+                cleanup_errors.append(type(error).__name__)
+            try:
+                if process.poll() is None and process_identity is not None and verify_process_identity(process_identity) == "MATCH":
+                    os.killpg(process.pid, signal.SIGKILL)
+            except OSError as error:
+                cleanup_errors.append(type(error).__name__)
             try:
                 process.wait(timeout=5)
+            except subprocess.SubprocessError as error:
+                cleanup_errors.append(type(error).__name__)
             finally:
-                for stream in (process.stdin, process.stdout):
-                    if stream is not None and not stream.closed:
-                        stream.close()
+                if process.stdout is not None and not process.stdout.closed:
+                    process.stdout.close()
+        # Evidence retention is independent of process cleanup success. Keep
+        # the original failure and exact process identity for safe readback.
         with stdout_path.open("xb") as saved:
             saved.write(records)
         stdout_path.chmod(0o600)
+        if cleanup_errors:
+            cleanup_path = path / "evidence" / (attempt["attempt_id"]+".cleanup.json")
+            with cleanup_path.open("xb") as saved:
+                saved.write(canonical({"primary": type(primary).__name__ if primary else None,
+                    "cleanup_errors": cleanup_errors, "stopped": process.poll() is not None,
+                    "process": asdict(process_identity) if process_identity else None}))
+            cleanup_path.chmod(0o600)
+            if primary is None:
+                raise BootstrapError("BOOTSTRAP_HOST_STOP_UNCONFIRMED", 503)
 
 
 def _active_previous(row: dict) -> None:
@@ -331,6 +381,31 @@ def _active_previous(row: dict) -> None:
         except ProcessLookupError:
             continue
         raise BootstrapError("BOOTSTRAP_PRIOR_HOST_GROUP_UNCERTAIN", 409)
+
+
+def maintenance_activity(root: Path) -> bool:
+    """Preserved bootstrap work must quiesce even after its Server has died."""
+    try:
+        path, _ = _private(root)
+        with directory(path / "locks") as parent:
+            names = os.listdir(parent)
+            if len(names) > 4096:
+                return True
+            for name in names:
+                if not name.endswith(".lock"):
+                    return True
+                identifier(name[:-5])
+                fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(fd)
+        with authority.store(root) as db:
+            for (raw,) in db.execute("SELECT evidence FROM ep_genesis_operations"):
+                _active_previous({"evidence": load(raw.encode())})
+        return False
+    except (OSError, BootstrapError, ValueError, KeyError, TypeError, sqlite3.Error):
+        return True
 
 
 def execute(root: Path, *, operation_id: str, token, headers: dict, source_identity=None) -> None:
@@ -359,17 +434,25 @@ def execute(root: Path, *, operation_id: str, token, headers: dict, source_ident
                 # These are bounded no-follow reads, not physical writes or
                 # unqualified Git execution in CENTRAL. Helpers otherwise
                 # validate only declaration IDs from the working checkout.
-                from .genesis_worker import verify_files
-                verify_files(scope, known, original.files, git=True)
-                with directory(target_path) as fd:
-                    if list(identity(os.fstat(fd))) != known["target_identity"]:
-                        raise BootstrapError("BOOTSTRAP_TARGET_CHANGED", 409)
+                from .genesis_worker import verify_files, git_snapshot
+                def registration_boundary():
+                    verify_files(scope, known, original.files, git=True)
+                    if not known.get("verified_git_snapshot") or git_snapshot(scope, known) != known["verified_git_snapshot"]:
+                        raise BootstrapError("BOOTSTRAP_COMMITTED_METADATA_CHANGED", 409)
+                    current_grant, current_scope = _context(db, token, headers, operation_id)
+                    _require_original(row, current_grant, current_scope)
+                    if current_scope != scope:
+                        raise BootstrapError("BOOTSTRAP_SCOPE_CHANGED", 403)
+                registration_boundary()
                 # Existing helpers are intentionally upserts. The preceding
                 # exact-identity conflict guard makes this creation-only.
                 declaration = load(original.files[".engineering-platform/repository.json"])
                 project_topology.register_server_local_topology(db, declaration=declaration)
                 local_repository_binding.bind_local_repository(db, project_id=original.project_id,
                     repository_id=original.repository_id, local_root=target_path, data_root=root)
+                # Helpers may read a resolved path; any late physical change
+                # rolls back their writes and cannot become a canonical bind.
+                registration_boundary()
                 row["state"] = "COMPLETE"
                 row["evidence"]["completed_steps"].append("REGISTER_AND_ATTACH")
                 row["evidence"]["registered_at"] = authority.now().isoformat()

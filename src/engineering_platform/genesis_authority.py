@@ -143,7 +143,27 @@ def issue(root: Path, *, expected_instance: str, config: dict) -> dict:
         raw, observed_hash = selected_bytes(fd, validator.name, maximum=131072, deadline=time.monotonic()+2)
     if observed_hash != VALIDATOR_SHA256:
         raise BootstrapError("BOOTSTRAP_EXTERNAL_VALIDATOR_PIN_INVALID", 409)
+    # Explicit installation-owner preparation, before any runtime admission.
+    # This trusted empty capability is never inferred from a later target or
+    # automatically recovered after an interrupted/unknown preparation.
+    from .genesis_service import _private
+    private_root, marker = _private(root)
+    if marker["instance_id"] != expected_instance:
+        raise BootstrapError("BOOTSTRAP_INSTANCE_MISMATCH", 403)
+    staging = private_root / "anchor" / ("stage-" + secrets.token_hex(16))
+    with directory(staging.parent) as parent:
+        parent_info = os.fstat(parent)
+        if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o077:
+            raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+        os.mkdir(staging.name, 0o700, dir_fd=parent)
+        with directory(staging) as prepared:
+            prepared_identity = list(identity(os.fstat(prepared)))
+            if os.listdir(prepared):
+                raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+        os.fsync(parent)
     scope = {**placement, "validator_path": str(validator), "validator_sha256": observed_hash,
+        "staging_path": str(staging), "staging_identity": prepared_identity,
+        "staging_parent_identity": list(identity(parent_info)),
         "instance_id": identifier(expected_instance), "host_id": host_id(),
         "consumer_id": config["consumer_id"], "principal": config["principal"], "audience": "genesis-bootstrap",
         "purpose": "CREATE_GENESIS_LOCAL", "operation_id": parsed["operation_id"], "target_ref": parsed["target_ref"],

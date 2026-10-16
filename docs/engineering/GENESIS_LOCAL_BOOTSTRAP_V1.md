@@ -42,3 +42,24 @@ No-follow descriptor-based writes, bounded paths/UTF8/modes/digests and case/Uni
 Safe closed receipt identifies original operation/request/plan/decision/proposal/bundle/manifest, proposed→reserved→committed→registered IDs distinctly, actual step outcomes, commit/tree/B8R/attachment references and bounded AS_OF. PARTIAL/EFFECT_UNCERTAIN is not COMPLETE. Readiness/Forge Mission acceptance NOT_OWNED_BY_EP. Remote governance NOT_APPLICABLE_GENESIS and product coverage NOT_APPLICABLE_NO_PRODUCT_CODE. No human businessapproval implied.
 
 Small actual noneditable installed ownergrant→HTTP→37 exact files→real trusted sandbox validator→real local Git commit→B8R→identical replay precedes full qualification. Main refusals and separate actual OS-crash recovery at creation/commit/registration, lost acknowledgements, no duplicate effects and real fault-restoration detector must pass before full waves. Full mandatory owning regression/coverage, independent Quality/Security, required profileCI/OwnerAuth, protected implementation and own nonempty reviewed/protected Finalization, NEW exact-final-main HTTP/Git/B8R/restart proof and safe proof-preserving own cleanup remain required. No GUI/installer/general peerACK gate or automatic next feature.
+
+## Current implementation constraints (not delivery qualification)
+
+The owning EP installation-owner provisioning step prepares one private empty
+staging-directory capability before runtime admission. Its exact inode and
+parent identity are bound in the finite signed grant. CREATE_TARGET publishes
+that capability with Darwin renameatx_np(RENAME_EXCL), using held descriptors;
+existing targets, changed capabilities and cross-filesystem placement refuse.
+There is no mkdir-and-adopt, copy, delete or overwrite fallback. Unknown owner
+preparation leftovers remain private evidence and are not adopted on recovery.
+Native rights remain finite to the selected staging capability and target.
+
+Git blob/tree plumbing consumes the original admitted bytes with --no-filters;
+it does not evaluate target clean filters or use git add. The original local
+root commit is deterministic for the original accepted operation. Actual full
+commit verification binds a finite metadata inode/content snapshot, checked
+before and after the existing B8R helpers in the same CENTRAL transaction with
+fresh authority. Any late drift rolls back those registration writes.
+
+These source repairs do not establish installed/full scoped DoD PASS. Original
+failed candidates, outputs and independent review reports remain preserved.

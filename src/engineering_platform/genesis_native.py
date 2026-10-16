@@ -46,7 +46,8 @@ def environment(native: Path) -> dict[str, str]:
 
 def command(*, native: Path, anchor: Path, target: Path, writable: bool,
             git_metadata: bool = False, readable: tuple[Path, ...] = (),
-            child: tuple[str, ...] | None = None, profile_id: str) -> tuple[str, ...]:
+            child: tuple[str, ...] | None = None, profile_id: str,
+            prepared: Path | None = None) -> tuple[str, ...]:
     """No consumer-chosen commands; caller is the fixed owning host adapter."""
     if not re.fullmatch(r"[a-z0-9-]{1,64}", profile_id):
         raise BootstrapError("BOOTSTRAP_NATIVE_PROFILE_INVALID")
@@ -57,6 +58,10 @@ def command(*, native: Path, anchor: Path, target: Path, writable: bool,
     options = effect_workspace.sandbox_options(anchor, readable=readable, runtime=native)
     filesystem = tomllib.loads("filesystem=" + options[1].split("=", 1)[1])["filesystem"]
     filesystem[str(target)] = "write" if writable else "read"
+    if prepared is not None:
+        if not writable or prepared.parent != anchor or not prepared.name.startswith("stage-"):
+            raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+        filesystem[str(prepared)] = "write"
     if git_metadata:
         if not writable:
             raise BootstrapError("BOOTSTRAP_GIT_SCOPE_INVALID")
