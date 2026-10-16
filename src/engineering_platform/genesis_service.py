@@ -613,6 +613,8 @@ def read(root: Path, *, operation_id: str, token, headers: dict, source_identity
 
 def operation(root: Path, *, token, headers: dict, operation_id: str, body: dict | None = None,
               resume: bool = False, source_identity=None, publish) -> None:
+    if source_identity is None:
+        source_identity = authority.database_identity(root)
     if body is not None:
         accepted = admit(root, token=token, headers=headers, value=body, source_identity=source_identity)
         if accepted["operation_id"] != operation_id:

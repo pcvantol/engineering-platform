@@ -408,6 +408,19 @@ class GenesisOwnerFixture(unittest.TestCase):
         with authority.store(self.data) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_genesis_operations").fetchone()[0], 0)
 
+    def test_cli_service_readback_keeps_initial_physical_source_through_publication(self):
+        service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
+        database = self.data / "epdata.sqlite"
+        def publish(result, instance, check):
+            original_bytes = database.read_bytes()
+            database.rename(self.data / "epdata-original.sqlite")
+            database.write_bytes(original_bytes)
+            with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_SOURCE_CHANGED"):
+                check()
+        service.operation(self.data, token=self.grant["credential"], headers=self.headers,
+            operation_id="synthetic-operation", publish=publish)
+        self.assertFalse((self.workspace / "new-repository").exists())
+
     def test_corrupt_operation_cannot_claim_complete_without_commit_or_B8R(self):
         service.initialize(self.data, expected_instance=self.instance)
         service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
