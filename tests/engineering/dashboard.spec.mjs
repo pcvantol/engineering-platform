@@ -9515,6 +9515,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentModalRestart").click();
     await page.mouse.move(0, 0);
 
+    // Touch controls still transition under reduced motion. Await the authored
+    // final colour before sampling; interpolation can serialize as oklab().
+    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", /^color\(srgb /);
+    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("background-color", /^color\(srgb /);
     const cancelFill = await page.locator("#confirmationModalCancel").evaluate((element) => getComputedStyle(element).backgroundColor);
     const confirmFill = await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor);
     expect(cancelFill).toMatch(/^color\(srgb /);
@@ -9542,6 +9546,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#confirmationModalText")).toHaveCSS("color", "rgb(24, 34, 48)");
     await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+    // Touch controls still transition under reduced motion. Await the authored
+    // final colour before sampling; interpolation can serialize as oklab().
+    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", /^color\(srgb /);
+    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("background-color", /^color\(srgb /);
     const cancelFill = await page.locator("#confirmationModalCancel").evaluate((element) => getComputedStyle(element).backgroundColor);
     const confirmFill = await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor);
     expect(cancelFill).toMatch(/^color\(srgb /);
