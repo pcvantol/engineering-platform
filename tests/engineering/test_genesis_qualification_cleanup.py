@@ -1,6 +1,7 @@
 """Actual stopped-child cleanup and independent primary-evidence retention."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -17,6 +18,23 @@ SPEC.loader.exec_module(qualification)
 
 
 class QualificationCleanupTests(unittest.TestCase):
+    def test_exited_parent_does_not_hide_actual_live_own_group(self):
+        from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity
+        p = subprocess.Popen([sys.executable, '-I', '-c',
+            'import os,time;pid=os.fork();\nif pid==0: time.sleep(60)\nelse: print(pid,flush=True)'],
+            stdout=subprocess.PIPE, text=True, start_new_session=True)
+        child = int(p.stdout.readline()); identity = capture_process_identity(child, p.pid)
+        self.assertIsNotNone(identity)
+        def cleanup():
+            if verify_process_identity(identity) == 'MATCH': os.kill(child, signal.SIGKILL)
+            p.wait(timeout=5); p.stdout.close()
+        self.addCleanup(cleanup)
+        p.wait(timeout=5)
+        case = qualification.Case.__new__(qualification.Case)
+        case.children = [p]; case.record = {'processes': [{'pid': p.pid}]}
+        with self.assertRaisesRegex(RuntimeError, 'group active or uncertain'): case.stop(p)
+        self.assertNotIn('reaped', case.record['processes'][0])
+
     def test_stopped_actual_own_server_is_resumed_stopped_and_reaped(self):
         p = subprocess.Popen([sys.executable, '-I', '-c',
             'import os,signal,time;os.kill(os.getpid(),signal.SIGSTOP);time.sleep(60)'], start_new_session=True)
@@ -44,10 +62,11 @@ class QualificationCleanupTests(unittest.TestCase):
             case.record = {'state': 'FAILED', 'failure': 'original actual primary failure'}
             with patch.object(qualification.socket, 'socket') as socket:
                 socket.return_value.__enter__.return_value.connect_ex.return_value = 1
-                with self.assertRaisesRegex(RuntimeError, 'cleanup incomplete'): case.finish()
+                with self.assertRaisesRegex(ExceptionGroup, 'cleanup incomplete') as found: case.finish()
             self.assertEqual(case.stop.call_count, 2)
             for log in case.logs: log.close.assert_called_once()
             receipt = json.loads((Path(d)/'receipt.json').read_bytes())
             self.assertEqual(receipt['failure'], 'original actual primary failure')
             self.assertEqual(len(receipt['cleanup_errors']), 2)
             self.assertEqual(receipt['state'], 'FAILED')
+            self.assertEqual([str(e) for e in found.exception.exceptions], ['actual first stop failed', 'actual first close failed'])

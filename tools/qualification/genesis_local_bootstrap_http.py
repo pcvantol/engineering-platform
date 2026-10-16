@@ -25,18 +25,24 @@ import traceback
 import zipfile
 
 
-FAULT_LAUNCHER = '''import json,os,signal,sys
+FAULT_LAUNCHER = '''import json,os,signal,sys,time
 from pathlib import Path
 from engineering_platform import genesis_service as service,server
 point,marker,root,instance=sys.argv[1:]
 def barrier():
  Path(marker).write_text(json.dumps({"pid":os.getpid(),"point":point}))
+ if point=="ACCEPT_THREAD":
+  until=time.monotonic()+120
+  while not Path(marker+".release").exists():
+   if time.monotonic()>until:raise TimeoutError("own qualification release not received")
+   time.sleep(.01)
+  return
  os.kill(os.getpid(),signal.SIGSTOP)
-if point=="ACCEPT":
+if point in {"ACCEPT","ACCEPT_THREAD"}:
  original=service.admit
  def wrapped(*a,**k):
   result=original(*a,**k)
-  barrier()
+  if result["newly_admitted"]:barrier()
   return result
  service.admit=wrapped
 elif point=="REGISTER":
@@ -143,12 +149,12 @@ class Case:
             time.sleep(.05)
         raise TimeoutError('Own Server did not listen')
 
-    def exchange(self, method, path, expected=None, body=None):
+    def exchange(self, method, path, expected=None, body=None, extra=None):
         raw = None if body is None else (json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(',', ':'))+'\n').encode()
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=180)
         try:
             c.request(method, path, body=raw, headers={**self.headers,
-                'Authorization': 'Bearer '+self.grant['credential'], 'Content-Type': 'application/json'})
+                'Authorization': 'Bearer '+self.grant['credential'], 'Content-Type': 'application/json', **(extra or {})})
             r = c.getresponse(); response = r.read(); value = json.loads(response)
             self.record['http'].append({'method': method, 'path': path, 'status': r.status, 'body': value,
                 'request_sha256': None if raw is None else hashlib.sha256(raw).hexdigest(),
@@ -181,6 +187,9 @@ class Case:
             if marker.exists():
                 value = json.loads(marker.read_bytes())
                 assert value['pid'] == p.pid
+                if value['point'] == 'ACCEPT_THREAD':
+                    self.record['boundaries'].append({**value, 'actual_thread_barrier': True})
+                    return
                 state = subprocess.check_output(['ps', '-o', 'stat=', '-p', str(p.pid)], text=True).strip()
                 if 'T' in state:
                     self.record['boundaries'].append({**value, 'actual_process_state': state, 'at_ns': time.time_ns()})
@@ -189,22 +198,46 @@ class Case:
         raise TimeoutError('Real boundary not reached')
 
     def stop(self, p, crash=False):
+        groups = {p.pid}
+        from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity, ProcessIdentity, _canonical_executable_identity
+        # Recorded native groups are finite owning diagnostics, never signal
+        # authority. Even an exited Server cannot hide a surviving native group.
+        database = self.data/'epdata.sqlite' if hasattr(self, 'data') else None
+        if database is not None and database.is_file():
+            with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
+                for raw, in db.execute('SELECT evidence FROM ep_genesis_operations'):
+                    for attempt in json.loads(raw)['attempts']:
+                        if attempt.get('process'): groups.add(attempt['process']['process_group'])
         if p.poll() is None:
             # Stop the exact unreaped child before capturing descendants. No
             # PID-only helper kill and no new children racing the inventory.
             p.send_signal(signal.SIGSTOP)
-            from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity
             parent = capture_process_identity(p.pid, p.pid)
             assert parent is not None, 'Unidentifiable own Server: stop unsafe'
-            listing = subprocess.check_output(['ps', '-axo', 'pid=,ppid='], text=True)
-            edges = [tuple(map(int, line.split())) for line in listing.splitlines() if line.strip()]
-            owned = {p.pid}
-            while True:
-                found = {pid for pid, ppid in edges if ppid in owned}
-                if found <= owned: break
-                owned.update(found)
-            descendants = [capture_process_identity(pid) for pid in owned-{p.pid}]
-            assert all(descendants), 'Unidentifiable own descendant: retain checkpoint'
+            owned = {p.pid: parent}
+            until = time.monotonic()+5
+            while time.monotonic() < until:
+                # PID, PPID, group and birth are one OS snapshot. Never adopt
+                # the current birth of a possibly reused descendant PID.
+                listing = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,pgid=,lstart=,comm='], text=True)
+                added = False
+                for line in listing.splitlines():
+                    row = line.split(maxsplit=8)
+                    if len(row) != 9: continue
+                    pid, ppid, group = map(int, row[:3])
+                    if ppid not in owned or pid in owned: continue
+                    assert verify_process_identity(owned[ppid]) == 'MATCH', 'Parent identity changed'
+                    birth = ' '.join(row[3:8])
+                    child = ProcessIdentity(pid, group, hashlib.sha256(f'{pid}|{group}|{birth}'.encode()).hexdigest(),
+                                            _canonical_executable_identity(row[8][:512]))
+                    status = verify_process_identity(child)
+                    if status == 'NOT_ACTIVE': continue
+                    assert status == 'MATCH', 'Descendant birth changed after ownership snapshot'
+                    os.kill(pid, signal.SIGSTOP)
+                    owned[pid] = child; groups.add(group); added = True
+                if not added: break
+            else: raise TimeoutError('Own descendant freeze did not stabilize')
+            descendants = list(owned.values())[1:]
             for child in descendants:
                 if verify_process_identity(child) == 'MATCH': os.kill(child.pid, signal.SIGKILL)
                 else: assert verify_process_identity(child) == 'NOT_ACTIVE', 'Descendant identity changed'
@@ -215,23 +248,59 @@ class Case:
             except subprocess.TimeoutExpired:
                 assert verify_process_identity(parent) == 'MATCH'
                 p.send_signal(signal.SIGKILL); p.wait(timeout=10)
-            for child in descendants:
-                until = time.monotonic()+5
-                while verify_process_identity(child) == 'MATCH' and time.monotonic() < until: time.sleep(.05)
-                assert verify_process_identity(child) == 'NOT_ACTIVE', 'Own descendant remains active'
             self.record['processes'][self.children.index(p)]['descendants_stopped'] = [c.pid for c in descendants]
+        for group in groups:
+            until = time.monotonic()+5
+            while True:
+                try: os.killpg(group, 0)
+                except ProcessLookupError: break
+                if time.monotonic() >= until: raise RuntimeError('Own group active or uncertain after parent stop')
+                time.sleep(.05)
         self.record['processes'][self.children.index(p)].update(returncode=p.returncode, reaped=True)
 
     def run(self):
+        if self.name == 'admission-refusals':
+            self.start()
+            before = self.snapshot()
+            for headers, status in (({'EP-Principal': 'foreign'}, 403), ({'EP-Instance-ID': 'foreign'}, 403),
+                                    ({'EP-Host-ID': 'f'*64}, 403), ({'Authorization': 'Bearer absent'}, 401)):
+                self.exchange('POST', self.path, status, self.request, headers)
+                assert self.snapshot() == before
+            changed = json.loads(json.dumps(self.request)); changed['effect_plan_binding']['plan_digest'] = 'a'*64
+            self.exchange('POST', self.path, 409, changed)
+            changed = json.loads(json.dumps(self.request)); changed['bundle']['files']['README.md']['utf8'] += 'changed'
+            self.exchange('POST', self.path, 409, changed)
+            foreign = self.root/'f'; foreign.mkdir(mode=0o700); (foreign/'sentinel').write_bytes(b'foreign-preserved')
+            self.target.symlink_to(foreign, target_is_directory=True)
+            self.exchange('POST', self.path, 409, self.request)
+            assert (foreign/'sentinel').read_bytes() == b'foreign-preserved'
+            self.target.unlink(); self.target.mkdir(mode=0o700)
+            (self.target/'sentinel').write_bytes(b'existing-preserved')
+            before = self.snapshot()
+            self.exchange('POST', self.path, 409, self.request)
+            assert before == self.snapshot() and before['rows']['ep_genesis_operations'] == 0
+            assert not list((self.data/'g/evidence').iterdir()), 'Admission refusal spawned native work'
+            self.record['final_snapshot'] = self.snapshot()
+            return
         point = {'lost-accept': 'ACCEPT', 'after-create': 'CREATE_TARGET', 'after-commit': 'GIT_REF',
                  'before-register': 'VERIFY_COMMIT', 'lost-success': 'REGISTER', 'revoke': 'CREATE_TARGET',
-                 'expiry': 'CREATE_TARGET', 'source-loss': 'CREATE_TARGET', 'validator-pin': 'WRITE_FILES'}[self.name]
+                 'expiry': 'CREATE_TARGET', 'source-loss': 'CREATE_TARGET', 'validator-pin': 'WRITE_FILES',
+                 'concurrency': 'ACCEPT_THREAD'}[self.name]
         p, marker = self.start(point)
         with ThreadPoolExecutor(max_workers=1) as pool:
             request = pool.submit(self.exchange, 'POST', self.path, None, self.request)
             self.barrier(p, marker)
             before = self.snapshot()
-            if self.name in {'revoke', 'expiry'}:
+            if self.name == 'concurrency':
+                duplicate = self.exchange('POST', self.path, 200, self.request)
+                assert duplicate['state'] == 'RESERVED' and before == self.snapshot()
+                changed = json.loads(json.dumps(self.request)); changed['effect_plan_binding']['plan_digest'] = 'a'*64
+                self.exchange('POST', self.path, 409, changed)
+                assert before == self.snapshot()
+                write_private(Path(str(marker)+'.release'), 'release original request')
+                request.result(timeout=160)
+                assert self.record['http'][-1]['status'] == 200 and self.record['http'][-1]['body']['state'] == 'COMPLETE'
+            elif self.name in {'revoke', 'expiry'}:
                 if self.name == 'revoke':
                     self.cli('genesis_cli', 'revoke', '--grant-id', self.grant['grant_id'], '--operation-id', 'owner-revoke')
                 else:
@@ -249,7 +318,12 @@ class Case:
                 self.validator.write_bytes(b'raise SystemExit(0)\n')
                 p.send_signal(signal.SIGCONT); request.result(timeout=45)
                 assert self.record['http'][-1]['status'] == 409
-                assert before == self.snapshot(), 'Untrusted validator reached an effect'
+                after = self.snapshot()
+                assert before['files'] == after['files'] and before['rows'] == after['rows'], 'Untrusted validator reached an effect'
+                old, new = before['effect_ledger'][0], after['effect_ledger'][0]
+                assert old['known'] == new['known'] and old['completed_steps'] == new['completed_steps']
+                assert new['attempts'][:-1] == old['attempts'] and new['attempts'][-1]['step'] == 'VALIDATE_DOCS'
+                assert new['attempts'][-1]['state'] != 'STEP_COMPLETED', 'Bad validator falsely completed'
                 self.validator.write_bytes(original)
                 complete = self.exchange('POST', self.item+'/resume', 200)
                 assert complete['state'] == 'COMPLETE'
@@ -290,18 +364,18 @@ class Case:
         errors = []
         for p in self.children:
             try: self.stop(p)
-            except BaseException: errors.append(traceback.format_exc())
+            except BaseException as error: errors.append(error)
         for log in self.logs:
             try: log.close()
-            except BaseException: errors.append(traceback.format_exc())
+            except BaseException as error: errors.append(error)
         try:
             with socket.socket() as s:
                 assert s.connect_ex(('127.0.0.1', self.port)) != 0, 'Own listener survived cleanup'
-        except BaseException: errors.append(traceback.format_exc())
-        self.record['cleanup_errors'] = errors
+        except BaseException as error: errors.append(error)
+        self.record['cleanup_errors'] = [{'type': type(e).__name__, 'detail': str(e)} for e in errors]
         if errors: self.record['state'] = 'FAILED'
         write_private(self.evidence/'receipt.json', self.record)
-        if errors: raise RuntimeError('Own cleanup incomplete; original failure and cleanup details retained')
+        if errors: raise BaseExceptionGroup('Own cleanup incomplete; original failure and cleanup details retained', errors)
 
 
 def main():
@@ -310,7 +384,7 @@ def main():
         p.add_argument('--'+name, type=Path, required=True)
     p.add_argument('--source', required=True)
     p.add_argument('--root-prefix', required=True)
-    p.add_argument('--cases', nargs='+', default=['lost-accept', 'after-create', 'after-commit', 'before-register', 'lost-success', 'revoke', 'expiry', 'source-loss', 'validator-pin'])
+    p.add_argument('--cases', nargs='+', default=['admission-refusals', 'lost-accept', 'after-create', 'after-commit', 'before-register', 'lost-success', 'revoke', 'expiry', 'source-loss', 'validator-pin', 'concurrency'])
     args = p.parse_args()
     assert args.root_prefix.isalnum() and len(args.root_prefix) <= 4
     assert len(args.source) == 40 and all(c in '0123456789abcdef' for c in args.source)
