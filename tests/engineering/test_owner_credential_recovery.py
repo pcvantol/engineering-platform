@@ -1533,7 +1533,7 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
                 "UPDATE engineering_metadata SET value='63' "
                 "WHERE key='installation.schema_version'"
             )
-            for table in ('ep_workspace_discovery_grants', 'ep_installation_pairing_credentials','ep_installation_pairings'):
+            for table in ('ep_execution_progress_grants', 'ep_workspace_discovery_grants', 'ep_installation_pairing_credentials','ep_installation_pairings'):
                 self.assertEqual(connection.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
                 connection.execute('DROP TABLE '+table)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema65")
@@ -1592,7 +1592,7 @@ class OwnerCredentialRecoveryTests(unittest.TestCase):
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("PRAGMA legacy_alter_table=ON")
-            for table in ('ep_workspace_discovery_grants', 'ep_installation_pairing_credentials','ep_installation_pairings'):
+            for table in ('ep_execution_progress_grants', 'ep_workspace_discovery_grants', 'ep_installation_pairing_credentials','ep_installation_pairings'):
                 self.assertEqual(connection.execute('SELECT count(*) FROM '+table).fetchone()[0],0)
                 connection.execute('DROP TABLE '+table)
             connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema65")

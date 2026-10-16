@@ -347,6 +347,29 @@ class ProjectDiscoveryTests(_DiscoveryFixture, unittest.TestCase):
 
 
 class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
+    def test_schema75_upgrade_preserves_discovery_grant_without_progress_authority(self):
+        from engineering_platform import execution_progress_authority as progress_authority
+        with storage.sqlite_connection(self.database) as connection:
+            before=connection.execute("SELECT * FROM ep_workspace_discovery_grants ORDER BY grant_id").fetchall()
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            connection.execute("DROP TABLE ep_execution_progress_grants")
+            connection.execute("ALTER TABLE ep_installations RENAME TO fixture_installations76")
+            connection.execute("CREATE TABLE ep_installations(instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 75))")
+            connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,75 FROM fixture_installations76")
+            connection.execute("DROP TABLE fixture_installations76")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=76")
+            connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(75)")
+            connection.execute("UPDATE engineering_metadata SET value='75' WHERE key='installation.schema_version'")
+        self.assertEqual(server.initialize(self.root).instance_id,self.instance)
+        with storage.sqlite_connection(self.database) as connection:
+            self.assertEqual(connection.execute("SELECT * FROM ep_workspace_discovery_grants ORDER BY grant_id").fetchall(),before)
+            self.assertEqual(discovery._authenticate(connection,self.token,self.headers)["instance_id"],self.instance)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_execution_progress_grants").fetchone()[0],0)
+            with self.assertRaises(progress_authority.ProgressError):
+                progress_authority._authenticate(connection,self.token,{**self.headers,"EP-Progress-Contract":"1.0"})
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(),[])
+
     def prepare_schema74(self):
         # Populate retained pre75 ledgers through their owning primitives.
         with storage.sqlite_connection(self.database) as connection:
@@ -367,11 +390,12 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("PRAGMA legacy_alter_table=ON")
             connection.execute("DROP TABLE ep_workspace_discovery_grants")
+            connection.execute("DROP TABLE ep_execution_progress_grants")
             connection.execute("ALTER TABLE ep_installations RENAME TO fixture_installations75")
             connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 74))")
             connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,74 FROM fixture_installations75")
             connection.execute("DROP TABLE fixture_installations75")
-            connection.execute("DELETE FROM engineering_schema_migrations WHERE version=75")
+            connection.execute("DELETE FROM engineering_schema_migrations WHERE version>=75")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(74)")
             connection.execute("UPDATE engineering_metadata SET value='74' WHERE key='installation.schema_version'")
 
@@ -391,8 +415,8 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
         with storage.sqlite_read_connection(self.database) as connection:
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             discovery.validate_schema(connection)
-            self.assertEqual(connection.execute("SELECT schema_version FROM ep_installations").fetchall(), [(75,)])
-            self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone(), (75,))
+            self.assertEqual(connection.execute("SELECT schema_version FROM ep_installations").fetchall(), [(server.SERVER_STORE_SCHEMA_VERSION,)])
+            self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone(), (server.SERVER_STORE_SCHEMA_VERSION,))
             self.assertIsNotNone(installation_pairing.authenticate(connection, self.pairing_credential))
             agent_trust.authenticate(connection, "migration-agent", self.agent_credential)
             self.assertNotIn(self.pairing_credential.encode(), self.database.read_bytes())

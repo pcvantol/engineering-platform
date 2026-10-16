@@ -90,6 +90,8 @@ CASES: tuple[Case, ...] = (
          headers=(("EP-Discovery-Contract", "1.0"),)),
     Case("Pre-project inspection requires separate INSPECT_READ", "POST", "/v1/onboarding/inspections", 401, "{}"),
     Case("Pre-project retained inspection requires INSPECT_READ", "GET", "/v1/onboarding/inspections/postman-inspection", 401),
+    Case("Execution progress requires separate read grant", "GET", "/v1/execution-progress/projects/postman-project?mission_id=postman-mission", 401),
+    Case("Exact execution progress requires separate read grant", "GET", "/v1/execution-progress/projects/postman-project/runs/postman-run?mission_id=postman-mission", 401),
     Case("Unknown route", "GET", "/not-an-ep-route", 404),
 )
 

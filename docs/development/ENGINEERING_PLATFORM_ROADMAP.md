@@ -1105,3 +1105,13 @@ This historical milestone marker is retained for documentation-contract compatib
 Platform code must not acquire DJConnect runtime, Home Assistant, branding or repository-name dependencies. Historical evidence and explicitly bounded migration compatibility may retain names without retaining authority.
 
 The planned home deployment of one authoritative Forge installation, one authoritative EP installation and one primary execution host on a Mac mini is a deployment profile, not a product-wide singleton invariant.
+
+## Selected Workspace execution progress read companion
+
+Assignment `L2-WORKSPACE-EXECUTION-PROGRESS-READ-V1-20261015` adds only the
+authenticated finite CENTRAL reporting/readback projection over existing
+Mission/EA submission, run and lifecycle records; implementation is in progress.
+[Owning source/phase/authority contract](../engineering/WORKSPACE_EXECUTION_PROGRESS_READ_V1.md)
+connects the existing PB-E5 reporting seam to Workspace PB-W3-PROGRESS/HOB-EP03.
+Existing open parent DAG nodes, execution authority, Mission acceptance and
+qualified HOB-EP02 inspection pins are unchanged.
