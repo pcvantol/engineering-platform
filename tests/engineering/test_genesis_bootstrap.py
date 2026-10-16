@@ -41,6 +41,12 @@ class GenesisOwnerFixture(unittest.TestCase):
         self.grant = authority.issue(self.data, expected_instance=self.instance, config=self.config)
         self.headers = dict(zip(authority.HEADERS, ("1.0", self.instance, authority.host_id(), "forge", "synthetic-service", "genesis-bootstrap")))
 
+    def _create(self, scope):
+        from engineering_platform import genesis_worker as worker
+        from engineering_platform.preproject_inspection import directory
+        with directory(Path(scope["staging_path"]).parent) as fd:
+            return worker.create(scope, prepared_parent_fd=fd)
+
     def test_real_finite_owner_scope_uses_original_R50_identity_and_bytes(self):
         original, rendered = contract.request(self.original_request)
         self.assertEqual(rendered.bundle_digest, "0c2c0fb41a68793be0960bb4289d7590060c8092ebb976852e1c4674b0f66b1d")
@@ -67,7 +73,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         with authority.store(self.data) as db:
             _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
         _, original = contract.request(self.original_request)
-        known = worker.create(scope)
+        known = self._create(scope)
         known.update(worker.write_files(scope, known, original.files))
         known.update(worker.git_initialize(scope, known, original.files))
         known.update(worker.prepare_commit(scope, known, original.files, 1792134000))
@@ -85,7 +91,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         with authority.store(self.data) as db:
             _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
         _, original = contract.request(self.original_request)
-        known = worker.create(scope)
+        known = self._create(scope)
         known.update(worker.write_files(scope, known, original.files))
         known.update(worker.git_initialize(scope, known, original.files))
         known.update(worker.prepare_commit(scope, known, original.files, 1792134000))
@@ -129,7 +135,7 @@ class GenesisOwnerFixture(unittest.TestCase):
                             token=self.grant["credential"], headers=self.headers, source_identity=None, lock_fd=lock_fd)
             self.assertEqual(len(children), 1)
             self.assertIsNotNone(children[0].poll())
-            self.assertEqual(len(list((self.data / "genesis-local-v1/evidence").glob("*.stdout"))), 1)
+            self.assertEqual(len(list((self.data / "g/evidence").glob("*.stdout"))), 1)
         finally:
             for child in children:
                 if child.poll() is None:
@@ -141,7 +147,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         with authority.store(self.data) as db:
             _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
         _, original = contract.request(self.original_request)
-        known = worker.create(scope)
+        known = self._create(scope)
         known.update(worker.write_files(scope, known, original.files))
         known.update(worker.git_initialize(scope, known, original.files))
         root = self.workspace / "new-repository"
@@ -176,7 +182,7 @@ class GenesisOwnerFixture(unittest.TestCase):
             return original_open(path, flags, *args, **kwargs)
         with patch.object(worker.os, "open", side_effect=replacement):
             with self.assertRaises(contract.BootstrapError):
-                worker.create(scope)
+                self._create(scope)
         self.assertTrue(swapped)
         self.assertEqual(list((self.workspace / "new-repository").iterdir()), [])
 
@@ -184,12 +190,12 @@ class GenesisOwnerFixture(unittest.TestCase):
         from engineering_platform import central_operational_reset as reset
         service.initialize(self.data, expected_instance=self.instance)
         _, preserved, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
-        self.assertNotIn("genesis-local-v1", unknown)
-        self.assertNotIn("genesis-local-v1.identity.json", unknown)
-        self.assertTrue(any(row["path"] == "genesis-local-v1.identity.json" and row["effect"] == "PRESERVE" for row in preserved))
-        (self.data / "genesis-local-v1/unknown-business-file").write_text("foreign")
+        self.assertNotIn("g", unknown)
+        self.assertNotIn("g.identity.json", unknown)
+        self.assertTrue(any(row["path"] == "g.identity.json" and row["effect"] == "PRESERVE" for row in preserved))
+        (self.data / "g/unknown-business-file").write_text("foreign")
         _, _, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
-        self.assertIn("genesis-local-v1/unknown-business-file", unknown)
+        self.assertIn("g/unknown-business-file", unknown)
 
     def test_prepared_publication_refuses_existing_and_foreign_capabilities(self):
         from engineering_platform import genesis_worker as worker
@@ -199,14 +205,14 @@ class GenesisOwnerFixture(unittest.TestCase):
         target.mkdir(mode=0o700)
         (target / "foreign").write_text("preserved")
         with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_TARGET_EXISTS"):
-            worker.create(scope)
+            self._create(scope)
         self.assertEqual((target / "foreign").read_text(), "preserved")
         self.assertTrue(Path(scope["staging_path"]).exists())
         prepared = Path(scope["staging_path"])
         prepared.rename(prepared.with_name(prepared.name + ".original"))
         prepared.mkdir(mode=0o700)
         with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_PREPARED_CAPABILITY_CHANGED"):
-            worker.create(scope)
+            self._create(scope)
 
     def test_actual_pipe_upload_deadline_and_maintenance_lock(self):
         read_fd, write_fd = os.pipe()

@@ -63,3 +63,15 @@ fresh authority. Any late drift rolls back those registration writes.
 
 These source repairs do not establish installed/full scoped DoD PASS. Original
 failed candidates, outputs and independent review reports remain preserved.
+
+The native permission compiler has a real finite placement capacity. Private
+bootstrap storage uses the short owning `g/a` anchor; the public contract never
+accepts that host path. The same finite traversal policy excludes whole sibling
+subtrees, not only their directory names, and explicitly retains the selected
+installed runtime when it shares an ancestor. Ambiguous selected branch-name
+prefixes and unsupported profile capacity refuse before physical effects.
+The prepared inode is a permitted child of its owning anchor, not a separate
+protected writable sandbox root. All other anchor children are denied. These
+constraints require actual native qualification at the selected placement;
+no parent-subtree fallback is used. Prior prototype layouts remain preserved
+and explicitly incompatible with new initialization, never silently recreated.

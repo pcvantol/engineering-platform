@@ -57,30 +57,56 @@ def command(*, native: Path, anchor: Path, target: Path, writable: bool,
     # executable, broader filesystem profile, or network-enabled fallback.
     options = effect_workspace.sandbox_options(anchor, readable=readable, runtime=native)
     filesystem = tomllib.loads("filesystem=" + options[1].split("=", 1)[1])["filesystem"]
+    filesystem[str(anchor)] = "write" if prepared is not None else "read"
     filesystem[str(target)] = "write" if writable else "read"
     if prepared is not None:
-        if not writable or prepared.parent != anchor or not prepared.name.startswith("stage-"):
+        if not writable or prepared.parent != anchor or not re.fullmatch(r"s[0-9a-f]{4}", prepared.name):
             raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
-        filesystem[str(prepared)] = "write"
+        # The capability is the one permitted child of its owning anchor.
+        # A separate writable-root binding protects it from unlink/rename.
     if git_metadata:
         if not writable:
             raise BootstrapError("BOOTSTRAP_GIT_SCOPE_INVALID")
         filesystem[str(target / ".git")] = "write"
-    for ancestor in reversed(target.parents):
+    traversals = (target,) if prepared is None else (target, prepared)
+    ancestors = {}
+    for leaf in traversals:
+        for ancestor in reversed(leaf.parents):
+            if ancestor != Path(ancestor.anchor):
+                ancestors.setdefault(ancestor, set()).add(leaf.relative_to(ancestor).parts[0])
+    for ancestor, next_children in ancestors.items():
+        for runtime_root in {Path(sys.prefix).absolute(), Path(sys.prefix).resolve()}:
+            if runtime_root != ancestor and runtime_root.is_relative_to(ancestor):
+                next_children.add(runtime_root.relative_to(ancestor).parts[0])
         if ancestor == Path(ancestor.anchor):
             continue
-        next_child = target.relative_to(ancestor).parts[0]
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", next_child):
+        if any(left != right and right.startswith(left) for left in next_children for right in next_children):
             raise BootstrapError("BOOTSTRAP_NATIVE_PLACEMENT_UNSUPPORTED", 422)
-        filesystem[str(ancestor)] = "read"
-        # Partition all nonmatching names. A blanket ancestor/* denial also
-        # matches the required next ancestor and wins over its direct grant.
-        for index, character in enumerate(next_child):
-            prefix = str(ancestor) + "/" + next_child[:index]
-            filesystem[prefix + "[!" + character + "]*"] = "none"
-            if index:
-                filesystem[prefix] = "none"
-        filesystem[str(ancestor / next_child) + "?*"] = "none"
+        if any(not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name) for name in next_children):
+            raise BootstrapError("BOOTSTRAP_NATIVE_PLACEMENT_UNSUPPORTED", 422)
+        filesystem[str(ancestor)] = "write" if prepared is not None and ancestor == anchor else "read"
+        # A trie partitions the complement of the finite allowed next names.
+        # Traversal may need both the target branch and private prepared branch;
+        # every other sibling remains denied, including CENTRAL/evidence.
+        def deny_other_names(prefix, names):
+            characters = {name[len(prefix)] for name in names if len(name) > len(prefix)}
+            location = str(ancestor) + "/" + prefix
+            if not characters:
+                filesystem[location + "?*"] = "none"
+                return
+            allowed = ("-" if "-" in characters else "") + "".join(sorted(characters - {"-"}))
+            filesystem[location + "[!" + allowed + "]*"] = "none"
+            if prefix and prefix not in names:
+                filesystem[location] = "none"
+            for character in sorted(characters):
+                deny_other_names(prefix + character, {name for name in names if name.startswith(prefix + character)})
+        deny_other_names("", next_children)
+    if prepared is not None:
+        ancestor = anchor
+        deny_other_names("", {prepared.name})
+    for name, permission in list(filesystem.items()):
+        if permission == "none":
+            filesystem[name + "/**"] = "none"
     value = "{" + ",".join(json.dumps(k) + "=" + json.dumps(v) for k, v in filesystem.items()) + "}"
     if len(value.encode()) > 65536:
         raise BootstrapError("BOOTSTRAP_NATIVE_PROFILE_CAPACITY", 422)

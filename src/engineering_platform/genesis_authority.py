@@ -150,7 +150,7 @@ def issue(root: Path, *, expected_instance: str, config: dict) -> dict:
     private_root, marker = _private(root)
     if marker["instance_id"] != expected_instance:
         raise BootstrapError("BOOTSTRAP_INSTANCE_MISMATCH", 403)
-    staging = private_root / "anchor" / ("stage-" + secrets.token_hex(16))
+    staging = private_root / "a" / ("s" + secrets.token_hex(2))
     with directory(staging.parent) as parent:
         parent_info = os.fstat(parent)
         if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o077:

@@ -61,12 +61,14 @@ def initialize(root: Path, *, expected_instance: str) -> dict:
         actual = db.execute("SELECT instance_id FROM ep_installations").fetchone()[0]
     if actual != expected_instance:
         raise BootstrapError("BOOTSTRAP_INSTANCE_MISMATCH", 403)
-    path = root / "genesis-local-v1"
-    marker = root / "genesis-local-v1.identity.json"
+    if (root / "genesis-local-v1").exists() or (root / "genesis-local-v1.identity.json").exists():
+        raise BootstrapError("BOOTSTRAP_PROTOTYPE_PRIVATE_LAYOUT_INCOMPATIBLE", 422)
+    path = root / "g"
+    marker = root / "g.identity.json"
     if path.exists() or marker.exists():
         return {"state": "ALREADY_INITIALIZED", "instance_id": _private(root)[1]["instance_id"]}
     path.mkdir(mode=0o700)
-    for name in ("evidence", "locks", "anchor"):
+    for name in ("evidence", "locks", "a"):
         (path / name).mkdir(mode=0o700)
     from .effect_workspace import immutable_json
     value = {"instance_id": actual, "host_id": authority.host_id(), "private_identity": list(identity(path.stat()))}
@@ -76,16 +78,16 @@ def initialize(root: Path, *, expected_instance: str) -> dict:
 
 def _private(root: Path) -> tuple[Path, dict]:
     with directory(root) as fd:
-        raw, _ = selected_bytes(fd, "genesis-local-v1.identity.json", maximum=4096, deadline=time.monotonic()+1)
+        raw, _ = selected_bytes(fd, "g.identity.json", maximum=4096, deadline=time.monotonic()+1)
         marker = load(raw)
-        info = os.stat("genesis-local-v1", dir_fd=fd, follow_symlinks=False)
+        info = os.stat("g", dir_fd=fd, follow_symlinks=False)
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
                 or list(identity(info)) != marker["private_identity"] or marker["host_id"] != authority.host_id()):
             raise BootstrapError("BOOTSTRAP_PRIVATE_EVIDENCE_UNAVAILABLE", 503)
     with authority.store(root) as db:
         if db.execute("SELECT instance_id FROM ep_installations").fetchone()[0] != marker["instance_id"]:
             raise BootstrapError("BOOTSTRAP_PRIVATE_INSTANCE_MISMATCH", 503)
-    return root / "genesis-local-v1", marker
+    return root / "g", marker
 
 
 @contextmanager
@@ -272,7 +274,7 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
         "accepted_at": row["evidence"]["accepted_at"], "bundle": row["request"]["bundle"]}
     mutating = step not in {"PREFLIGHT", "VALIDATE_DOCS", "VERIFY_COMMIT"}
     target = Path(scope["workspace_root"]) / scope["target_name"]
-    command = genesis_native.command(native=native, anchor=path / "anchor", target=target,
+    command = genesis_native.command(native=native, anchor=path / "a", target=target,
         writable=mutating, git_metadata=step.startswith("GIT_"), readable=(Path(scope["validator_path"]), Path(__file__).resolve().parent.parent),
         prepared=Path(scope["staging_path"]) if step == "CREATE_TARGET" else None,
         profile_id="ep-genesis-"+attempt["attempt_id"])
@@ -285,7 +287,7 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
     try:
         with stderr_path.open("xb") as errors:
             stderr_path.chmod(0o600)
-            process = subprocess.Popen(command, cwd=path / "anchor", env=genesis_native.environment(native),
+            process = subprocess.Popen(command, cwd=path / "a", env=genesis_native.environment(native),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, start_new_session=True, pass_fds=(lock_fd,))
             process_identity = capture_process_identity(process.pid, process.pid)
             if process_identity is None:

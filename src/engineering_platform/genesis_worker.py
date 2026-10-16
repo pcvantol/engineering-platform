@@ -18,6 +18,7 @@ import time
 import signal
 import ctypes
 import errno
+import traceback
 
 from .genesis_contract import BootstrapError, bundle, canonical, digest, load, MAX_BODY, VALIDATOR_SHA256
 from .preproject_inspection import directory, identity, selected_bytes, inventory, read_relative
@@ -46,9 +47,26 @@ def target(scope: dict, known: dict):
             os.close(fd)
 
 
-def create(scope: dict) -> dict:
+@contextmanager
+def prepared_capability(scope: dict, parent_fd: int | None = None):
+    # The native worker's CWD is the exact owning private anchor. Opening from
+    # that pinned directory avoids granting its absolute private ancestors.
+    source = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if parent_fd is None else os.dup(parent_fd)
+    prepared = None
+    try:
+        if list(identity(os.fstat(source))) != scope["staging_parent_identity"]:
+            raise BootstrapError("BOOTSTRAP_PREPARED_CAPABILITY_CHANGED", 409)
+        prepared = os.open(Path(scope["staging_path"]).name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=source)
+        yield source, prepared
+    finally:
+        if prepared is not None:
+            os.close(prepared)
+        os.close(source)
+
+
+def create(scope: dict, *, prepared_parent_fd: int | None = None) -> dict:
     staging = Path(scope["staging_path"])
-    with directory(staging.parent) as source, directory(staging) as prepared, directory(Path(scope["workspace_root"])) as parent:
+    with prepared_capability(scope, prepared_parent_fd) as (source, prepared), directory(Path(scope["workspace_root"])) as parent:
         if (list(identity(os.fstat(prepared))) != scope["staging_identity"]
                 or list(identity(os.fstat(source))) != scope["staging_parent_identity"] or os.listdir(prepared)):
             raise BootstrapError("BOOTSTRAP_PREPARED_CAPABILITY_CHANGED", 409)
@@ -438,6 +456,9 @@ def main() -> int:
         print(canonical({"state": "STEP_COMPLETED", "step": step, "result": result}).decode(), end="", flush=True)
         return 0
     except (BootstrapError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # This stream is the owning private step evidence. Preserve the actual
+        # failure at occurrence, never reconstruct missing historical stderr.
+        traceback.print_exc(file=sys.stderr)
         print(json.dumps({"state": "STEP_NOT_COMPLETED", "error": error.code if isinstance(error, BootstrapError) else "BOOTSTRAP_HOST_STEP_FAILED"}), flush=True)
         return 1
 
