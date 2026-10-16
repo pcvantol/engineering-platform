@@ -1,7 +1,7 @@
 # Genesis local bootstrap V1 — selected first slice
 
 Owner L2: `L2-GENESIS-LOCAL-BOOTSTRAP-V1-20261016`; JOIN `L2-L3-GENESIS-LOCAL-BOOTSTRAP-V1-20261016`.
-Status: concrete candidate contract; NOT yet an implemented/qualified endpoint. Base EP2.3.122/bc441c0. Own product allocation EP2.3.123/CENTRAL77, subject to canonical consistency checks. Closed predecessors and L4's qualified progresspin remain unchanged.
+Status: implemented local candidate contract; NOT yet delivered or fully qualified. Base EP2.3.122/bc441c0. Own product allocation EP2.3.123/CENTRAL77, subject to canonical consistency checks. Closed predecessors and L4's qualified progresspin remain unchanged.
 
 ## Common meaning and transport
 
@@ -75,3 +75,27 @@ protected writable sandbox root. All other anchor children are denied. These
 constraints require actual native qualification at the selected placement;
 no parent-subtree fallback is used. Prior prototype layouts remain preserved
 and explicitly incompatible with new initialization, never silently recreated.
+
+## Current bounded Git and process implementation
+
+Owner provisioning prepares two distinct private empty inode capabilities: the
+new target and its later Git metadata directory. Both are signed into the
+original finite grant before admission. The second is published with the same
+no-replace primitive only after real document validation. No mkdir/open gap may
+claim foreign Git metadata. Existing/unknown targets remain explicit refusals.
+
+Fixed blob-only fast-import commands consume exact admitted bytes, with no
+commit/ref/command instructions from documents. Original blob IDs are checked.
+A single bounded mktree batch verifies precomputed canonical tree IDs; read-tree
+initializes only the index, never the worktree. Batch cat-file proves original
+committed blobs; index-versus-commit is checked independently. No target filter,
+hook, auto maintenance, remote effect, reset or product-code execution occurs.
+The original 30-second step deadline is retained; serial per-blob Git calls are
+not allowed to justify extending it.
+
+Live stderr is drained into a hard finite retained byte budget during upload,
+protocol reads and process completion. Protocol/tail bytes are retained. Whole
+process-group closure and durable private logs precede STEP_COMPLETED. Primary
+and cleanup/evidence exceptions remain separate actual exception objects with
+private detailed readback; any unconfirmed closure/persistence remains failure.
+Final independent review and installed qualification are still required.

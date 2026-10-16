@@ -1090,7 +1090,7 @@ def _nested_preserved_classification(
     if root_name in {"genesis-local-v1", "g"}:
         if len(parts) == 2 and parts[0] == "evidence" and re.fullmatch(r"[0-9a-f]{32}\.(?:stdout|stderr|cleanup\.json)", parts[1]):
             return "GENESIS_ORIGINAL_EFFECT_EVIDENCE"
-        if len(parts) == 2 and parts[0] == "locks" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lock", parts[1]):
+        if len(parts) == 2 and parts[0] == "locks" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\.lock", parts[1]):
             return "GENESIS_RESOURCE_OWNERSHIP"
         return None
     if root_name == "runtime":

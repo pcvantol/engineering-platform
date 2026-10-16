@@ -229,7 +229,8 @@ exec(compile(b,p,'exec'),{'__name__':'__main__','__file__':p})
 def _git(root: Path, *args: str, known: dict, input_bytes: bytes | None = None) -> bytes:
     command = ("git", "--git-dir=.", "--work-tree="+str(root), "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
         "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "protocol.allow=never",
-        "-c", "diff.autoRefreshIndex=false", *args)
+        "-c", "diff.autoRefreshIndex=false", "-c", "gc.auto=0", "-c", "gc.autoPackLimit=0",
+        "-c", "maintenance.auto=false", *args)
     # Pin the metadata directory as the child's actual working directory.
     # A replaced .git path cannot redirect a mutation to foreign metadata.
     with directory(root) as parent:
@@ -305,18 +306,15 @@ def git_snapshot(scope: dict, known: dict) -> dict:
     return observations
 
 
-def git_initialize(scope: dict, known: dict, files: dict) -> dict:
+def git_initialize(scope: dict, known: dict, files: dict, *, prepared_parent_fd: int | None = None) -> dict:
     if known.get("git_identity"):
         _git_guard(scope, known)
         return {k: known[k] for k in ("git_identity", "git_config_digest")}
     verify_files(scope, known, files, git=False)
-    with target(scope, known) as fd:
-        os.mkdir(".git", 0o700, dir_fd=fd)
-        metadata = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-        try:
-            initializing = {**known, "git_identity": list(identity(os.fstat(metadata)))}
-        finally:
-            os.close(metadata)
+    metadata_scope = {**scope, "workspace_root": str(_git_root(scope)), "root_identity": known["target_identity"],
+        "target_name": ".git", "staging_path": scope["git_staging_path"], "staging_identity": scope["git_staging_identity"]}
+    claim = create(metadata_scope, prepared_parent_fd=prepared_parent_fd)
+    initializing = {**known, "git_identity": claim["target_identity"]}
     _git(_git_root(scope), "-c", "init.templateDir=", "init", "--initial-branch=main", known=initializing)
     with target(scope, known) as fd:
         gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -333,26 +331,41 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
     root = _git_root(scope)
     # Object/index plumbing consumes only the admitted bytes. `git add` can
     # execute a target-configured clean filter after an earlier file guard.
-    hierarchy = {}
-    for name, raw in sorted(files.items()):
+    hierarchy, blob_commands, expected_blobs = {}, [], []
+    for mark, (name, raw) in enumerate(sorted(files.items()), 1):
         node = hierarchy
         parts = name.split("/")
         for part in parts[:-1]:
             node = node.setdefault(part, {})
-        object_id = _git(root, "hash-object", "--no-filters", "-w", "--stdin", known=known, input_bytes=raw).decode().strip()
         expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
-        if object_id != expected:
-            raise BootstrapError("BOOTSTRAP_BLOB_CONFLICT", 409)
-        node[parts[-1]] = object_id
-    def write_tree(node):
-        entries = []
-        for name, value in sorted(node.items()):
+        node[parts[-1]] = expected
+        expected_blobs.append(expected)
+        blob_commands.append(b"blob\nmark :"+str(mark).encode()+b"\ndata "+str(len(raw)).encode()+b"\n"+raw+b"\nget-mark :"+str(mark).encode()+b"\n")
+    actual_blobs = _git(root, "fast-import", "--quiet", "--done", known=known,
+        input_bytes=b"".join(blob_commands)+b"done\n").decode().splitlines()
+    if actual_blobs != expected_blobs:
+        raise BootstrapError("BOOTSTRAP_BLOB_CONFLICT", 409)
+    tree_commands, expected_trees = [], []
+    def plan_tree(node):
+        entries, raw_entries = [], []
+        for name, value in sorted(node.items(), key=lambda item: item[0]+("/" if isinstance(item[1], dict) else "\0")):
             if isinstance(value, dict):
-                entries.append(b"040000 tree " + write_tree(value).encode() + b"\t" + name.encode() + b"\0")
+                value = plan_tree(value)
+                mode, kind = b"40000", b"tree"
             else:
-                entries.append(b"100644 blob " + value.encode() + b"\t" + name.encode() + b"\0")
-        return _git(root, "mktree", "-z", known=known, input_bytes=b"".join(entries)).decode().strip()
-    tree = write_tree(hierarchy)
+                mode, kind = b"100644", b"blob"
+            entries.append(mode+b" "+kind+b" "+value.encode()+b"\t"+name.encode()+b"\0")
+            raw_entries.append(mode+b" "+name.encode()+b"\0"+bytes.fromhex(value))
+        raw = b"".join(raw_entries)
+        object_id = hashlib.sha1(b"tree "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+        tree_commands.append(b"".join(entries)+b"\0")
+        expected_trees.append(object_id)
+        return object_id
+    tree = plan_tree(hierarchy)
+    actual_trees = _git(root, "mktree", "--batch", "-z", known=known, input_bytes=b"".join(tree_commands)).decode().splitlines()
+    if actual_trees != expected_trees:
+        raise BootstrapError("BOOTSTRAP_TREE_CONFLICT", 409)
+    _git(root, "read-tree", tree, known=known)
     declaration = b"tree " + tree.encode() + b"\nauthor Engineering Platform Bootstrap <bootstrap@localhost> "
     author = str(accepted_at).encode() + b" +0000"
     raw = declaration + author + b"\ncommitter Engineering Platform Bootstrap <bootstrap@localhost> " + author
@@ -409,12 +422,22 @@ def verify_commit(scope: dict, known: dict, files: dict) -> dict:
         name = name.decode("utf-8")
         if mode != "100644" or kind != "blob" or name not in files:
             raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
-        raw = _git(root, "cat-file", "blob", object_id, known=known)
-        if raw != files[name]:
-            raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
-        observed[name] = digest(raw)
+        observed[name] = object_id
     if set(observed) != set(files) or _git(root, "rev-parse", "HEAD^{tree}", known=known).decode().strip() != known["tree"]:
         raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
+    batch = _git(root, "cat-file", "--batch", known=known,
+        input_bytes=b"".join(observed[name].encode()+b"\n" for name in sorted(files)))
+    for name in sorted(files):
+        header, batch = batch.split(b"\n", 1)
+        if header != observed[name].encode()+b" blob "+str(len(files[name])).encode():
+            raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
+        size = len(files[name])
+        if batch[:size] != files[name] or batch[size:size+1] != b"\n":
+            raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
+        batch = batch[size+1:]
+        observed[name] = digest(files[name])
+    if batch or _git(root, "diff-index", "--cached", "--name-only", known["commit"], known=known):
+        raise BootstrapError("BOOTSTRAP_COMMITTED_INDEX_CONFLICT", 409)
     declaration = parse_repository_attachment(load(files[".engineering-platform/repository.json"]))
     if before != git_snapshot(scope, known):
         raise BootstrapError("BOOTSTRAP_GIT_CHANGED_DURING_VERIFICATION", 409)

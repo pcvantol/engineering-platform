@@ -47,6 +47,12 @@ class GenesisOwnerFixture(unittest.TestCase):
         with directory(Path(scope["staging_path"]).parent) as fd:
             return worker.create(scope, prepared_parent_fd=fd)
 
+    def _git_initialize(self, scope, known, files):
+        from engineering_platform import genesis_worker as worker
+        from engineering_platform.preproject_inspection import directory
+        with directory(Path(scope["git_staging_path"]).parent) as fd:
+            return worker.git_initialize(scope, known, files, prepared_parent_fd=fd)
+
     def test_real_finite_owner_scope_uses_original_R50_identity_and_bytes(self):
         original, rendered = contract.request(self.original_request)
         self.assertEqual(rendered.bundle_digest, "0c2c0fb41a68793be0960bb4289d7590060c8092ebb976852e1c4674b0f66b1d")
@@ -75,7 +81,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         _, original = contract.request(self.original_request)
         known = self._create(scope)
         known.update(worker.write_files(scope, known, original.files))
-        known.update(worker.git_initialize(scope, known, original.files))
+        known.update(self._git_initialize(scope, known, original.files))
         known.update(worker.prepare_commit(scope, known, original.files, 1792134000))
         known.update(worker.commit_object(scope, known))
         known.update(worker.commit_ref(scope, known))
@@ -93,7 +99,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         _, original = contract.request(self.original_request)
         known = self._create(scope)
         known.update(worker.write_files(scope, known, original.files))
-        known.update(worker.git_initialize(scope, known, original.files))
+        known.update(self._git_initialize(scope, known, original.files))
         known.update(worker.prepare_commit(scope, known, original.files, 1792134000))
         known.update(worker.commit_object(scope, known))
         known.update(worker.commit_ref(scope, known))
@@ -149,7 +155,7 @@ class GenesisOwnerFixture(unittest.TestCase):
         _, original = contract.request(self.original_request)
         known = self._create(scope)
         known.update(worker.write_files(scope, known, original.files))
-        known.update(worker.git_initialize(scope, known, original.files))
+        known.update(self._git_initialize(scope, known, original.files))
         root = self.workspace / "new-repository"
         marker = root / "forbidden-filter-effect"
         original_verify = worker.verify_files
@@ -238,6 +244,105 @@ class GenesisOwnerFixture(unittest.TestCase):
         with authority.store(self.data) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM ep_local_repository_bindings").fetchone()[0], 1)
+
+    def test_committed_genesis_has_clean_index_and_worktree(self):
+        from engineering_platform import genesis_worker as worker
+        scope, known = self._admitted_committed()
+        self.assertEqual(worker._git(self.workspace / scope["target_name"], "status", "--porcelain=v1", known=known), b"")
+
+    def test_foreign_git_metadata_is_not_adopted_at_creation(self):
+        from engineering_platform import genesis_worker as worker
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant["credential"], self.headers)
+        _, original = contract.request(self.original_request)
+        known = self._create(scope)
+        known.update(worker.write_files(scope, known, original.files))
+        original_open = os.open
+        swapped = []
+        def replacement(path, flags, *args, **kwargs):
+            if path == ".git" and "dir_fd" in kwargs and not swapped:
+                parent = kwargs["dir_fd"]
+                os.rename(path, ".git.original", src_dir_fd=parent, dst_dir_fd=parent)
+                os.mkdir(path, 0o700, dir_fd=parent)
+                swapped.append(True)
+            return original_open(path, flags, *args, **kwargs)
+        with patch.object(worker.os, "open", side_effect=replacement):
+            with self.assertRaises(contract.BootstrapError):
+                self._git_initialize(scope, known, original.files)
+        self.assertTrue(swapped)
+        self.assertFalse((self.workspace / scope["target_name"] / ".git/config").exists())
+
+    def test_actual_stderr_flood_is_bounded_before_process_exit(self):
+        service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
+        code = "import os,time; os.write(2,b'x'*400000); time.sleep(20)"
+        children = []
+        original_popen = subprocess.Popen
+        def spawned(*args, **kwargs):
+            child = original_popen(*args, **kwargs)
+            children.append(child)
+            return child
+        before = time.monotonic()
+        try:
+            with service._lock(self.data, "synthetic-operation") as fd:
+                with patch.object(service.genesis_native, "runtime", return_value=Path(sys.executable)), \
+                     patch.object(service.genesis_native, "command", return_value=(sys.executable, "-I", "-c", code)), \
+                     patch.object(service, "capture_process_identity", side_effect=lambda pid, group: service.ProcessIdentity(pid, group, "own-supervised-test", "own-supervised-test")), \
+                     patch.object(service, "verify_process_identity", return_value="MATCH"), \
+                     patch.object(service.subprocess, "Popen", side_effect=spawned):
+                    with self.assertRaises(service.CleanupFailure) as found:
+                        service._execute_step(self.data, operation_id="synthetic-operation", step="PREFLIGHT",
+                            token=self.grant["credential"], headers=self.headers, source_identity=None, lock_fd=fd)
+            self.assertEqual(found.exception.primary.code, "BOOTSTRAP_HOST_ERROR_OUTPUT_LIMIT")
+            self.assertLess(time.monotonic() - before, 5)
+            self.assertIsNotNone(children[0].poll())
+            errors = list((self.data / "g/evidence").glob("*.stderr"))
+            self.assertEqual([f.stat().st_size for f in errors], [262144])
+            with authority.store(self.data) as db:
+                row = service._row(db, "synthetic-operation", self.grant["credential"])
+                self.assertEqual(row["evidence"]["completed_steps"], [])
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=5)
+
+    def test_primary_and_evidence_io_failures_are_both_retained(self):
+        service.admit(self.data, token=self.grant["credential"], headers=self.headers, value=self.original_request)
+        original_open = Path.open
+        injected = FileExistsError("synthetic exclusive stdout evidence collision")
+        def fail_stdout(path, *args, **kwargs):
+            if path.name.endswith(".stdout"):
+                raise injected
+            return original_open(path, *args, **kwargs)
+        with service._lock(self.data, "synthetic-operation") as fd:
+            with patch.object(service.genesis_native, "runtime", return_value=Path(sys.executable)), \
+                 patch.object(service.genesis_native, "command", return_value=(sys.executable, "-I", "-c", "import sys;sys.stdin.buffer.read()")), \
+                 patch.object(service, "capture_process_identity", return_value=None), \
+                 patch.object(Path, "open", fail_stdout):
+                with self.assertRaises(service.CleanupFailure) as found:
+                    service._execute_step(self.data, operation_id="synthetic-operation", step="PREFLIGHT",
+                        token=self.grant["credential"], headers=self.headers, source_identity=None, lock_fd=fd)
+        self.assertEqual(found.exception.primary.code, "BOOTSTRAP_HOST_IDENTITY_UNAVAILABLE")
+        self.assertIn(injected, found.exception.cleanup_errors)
+        self.assertIs(found.exception.__cause__, found.exception.primary)
+
+    def test_completed_parent_does_not_hide_an_active_or_uncertain_group(self):
+        record = service.ProcessIdentity(999999, 999999, "synthetic", "synthetic")
+        from dataclasses import asdict
+        with patch.object(service, "verify_process_identity", return_value="NOT_ACTIVE"), \
+             patch.object(service.os, "killpg", return_value=None):
+            with self.assertRaisesRegex(contract.BootstrapError, "BOOTSTRAP_PRIOR_HOST_GROUP_UNCERTAIN"):
+                service._active_previous({"evidence": {"attempts": [{"process": asdict(record), "state": "STEP_COMPLETED"}]}})
+
+    def test_colon_operation_lock_is_classified_but_unknown_lock_is_not(self):
+        from engineering_platform import central_operational_reset as reset
+        with service._lock(self.data, "bootstrap:one"):
+            _, preserved, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
+            self.assertNotIn("g/locks/bootstrap:one.lock", unknown)
+            self.assertTrue(any(row["path"] == "g/locks/bootstrap:one.lock" for row in preserved))
+        (self.data / "g/locks/unknown!.lock").write_text("foreign")
+        _, _, unknown, _ = reset._external_inventory(self.data, expected_installation_id=self.instance)
+        self.assertIn("g/locks/unknown!.lock", unknown)
 
     def test_corrupt_operation_cannot_claim_complete_without_commit_or_B8R(self):
         service.initialize(self.data, expected_instance=self.instance)

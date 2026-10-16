@@ -172,6 +172,16 @@ def issue(root: Path, *, expected_instance: str, config: dict) -> dict:
         "effect_plan_binding": parsed["effect_plan_binding"], "project_id": original.project_id,
         "authority_repository_id": original.authority_repository_id, "repository_id": original.repository_id,
         "effects": list(EFFECTS), "maximum_files": 37, "maximum_payload_bytes": 262144, "worker_seconds": 30}
+    git_staging = staging.with_name("s" + secrets.token_hex(2))
+    with directory(git_staging.parent) as parent:
+        if list(identity(os.fstat(parent))) != scope["staging_parent_identity"]:
+            raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+        os.mkdir(git_staging.name, 0o700, dir_fd=parent)
+        with directory(git_staging) as prepared:
+            scope.update(git_staging_path=str(git_staging), git_staging_identity=list(identity(os.fstat(prepared))))
+            if os.listdir(prepared):
+                raise BootstrapError("BOOTSTRAP_PREPARATION_UNSAFE", 403)
+        os.fsync(parent)
     token = secrets.token_urlsafe(32)
     at = now()
     scope.update(issued_at=at.isoformat(), expires_at=(at+timedelta(seconds=ttl)).isoformat())

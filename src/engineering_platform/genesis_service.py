@@ -220,24 +220,32 @@ def admit(root: Path, *, token, headers: dict, value: dict, source_identity=None
         return {**_row(db, operation_id, token), "newly_admitted": True}
 
 
-def _line(stream, deadline: float) -> bytes:
+def _line(stream, deadline: float, *, guard=None, records=None) -> bytes:
     data = bytearray()
     with selectors.DefaultSelector() as selector:
         selector.register(stream, selectors.EVENT_READ)
         while len(data) <= 262144:
+            if guard is not None:
+                guard()
             remaining = deadline-time.monotonic()
-            if remaining <= 0 or not selector.select(remaining):
+            if remaining <= 0:
                 raise BootstrapError("BOOTSTRAP_HOST_DEADLINE", 409)
+            if not selector.select(min(remaining, .05)):
+                continue
             chunk = os.read(stream.fileno(), 1)
             if not chunk:
                 raise BootstrapError("BOOTSTRAP_HOST_ENDED_WITHOUT_RECEIPT", 409)
             data.extend(chunk)
+            if records is not None:
+                if len(records) >= 262144:
+                    raise BootstrapError("BOOTSTRAP_HOST_OUTPUT_LIMIT", 409)
+                records.extend(chunk)
             if chunk == b"\n":
                 return bytes(data)
     raise BootstrapError("BOOTSTRAP_HOST_OUTPUT_LIMIT", 409)
 
 
-def _write(stream, payload: bytes, deadline: float) -> None:
+def _write(stream, payload: bytes, deadline: float, *, guard=None) -> None:
     """Upload has the same finite deadline as startup/readback, even at EAGAIN."""
     fd = stream.fileno()
     os.set_blocking(fd, False)
@@ -245,9 +253,13 @@ def _write(stream, payload: bytes, deadline: float) -> None:
     with selectors.DefaultSelector() as selector:
         selector.register(fd, selectors.EVENT_WRITE)
         while pending:
+            if guard is not None:
+                guard()
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or not selector.select(remaining):
+            if remaining <= 0:
                 raise BootstrapError("BOOTSTRAP_HOST_DEADLINE", 409)
+            if not selector.select(min(remaining, .05)):
+                continue
             try:
                 written = os.write(fd, pending)
             except BlockingIOError:
@@ -276,19 +288,57 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
     target = Path(scope["workspace_root"]) / scope["target_name"]
     command = genesis_native.command(native=native, anchor=path / "a", target=target,
         writable=mutating, git_metadata=step.startswith("GIT_"), readable=(Path(scope["validator_path"]), Path(__file__).resolve().parent.parent),
-        prepared=Path(scope["staging_path"]) if step == "CREATE_TARGET" else None,
+        prepared=Path(scope["git_staging_path"] if step == "GIT_INIT" else scope["staging_path"]) if step in {"CREATE_TARGET", "GIT_INIT"} else None,
         profile_id="ep-genesis-"+attempt["attempt_id"])
     stderr_path = path / "evidence" / (attempt["attempt_id"]+".stderr")
     stdout_path = path / "evidence" / (attempt["attempt_id"]+".stdout")
     process = None
     process_identity = None
     records = bytearray()
+    error_bytes = 0
+    error_sink = None
+    error_descriptor = None
+    def drain_errors():
+        nonlocal error_bytes
+        if process is None or process.stderr is None or error_sink is None:
+            return
+        os.set_blocking(process.stderr.fileno(), False)
+        while True:
+            try:
+                chunk = os.read(process.stderr.fileno(), 65536)
+            except BlockingIOError:
+                return
+            if not chunk:
+                return
+            room = 262144-error_bytes
+            error_sink.write(chunk[:room])
+            error_sink.flush()
+            error_bytes += min(room, len(chunk))
+            if len(chunk) > room:
+                raise BootstrapError("BOOTSTRAP_HOST_ERROR_OUTPUT_LIMIT", 409)
+    def drain_tail():
+        if process is None or process.stdout is None or process.stdout.closed:
+            return
+        os.set_blocking(process.stdout.fileno(), False)
+        while True:
+            try:
+                chunk = os.read(process.stdout.fileno(), 65536)
+            except BlockingIOError:
+                return
+            if not chunk:
+                return
+            room = 262144-len(records)
+            records.extend(chunk[:room])
+            if len(chunk) > room:
+                raise BootstrapError("BOOTSTRAP_HOST_OUTPUT_LIMIT", 409)
     deadline = time.monotonic()+30
     try:
         with stderr_path.open("xb") as errors:
+            error_sink = errors
+            error_descriptor = os.dup(errors.fileno())
             stderr_path.chmod(0o600)
             process = subprocess.Popen(command, cwd=path / "a", env=genesis_native.environment(native),
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, start_new_session=True, pass_fds=(lock_fd,))
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, pass_fds=(lock_fd,))
             process_identity = capture_process_identity(process.pid, process.pid)
             if process_identity is None:
                 raise BootstrapError("BOOTSTRAP_HOST_IDENTITY_UNAVAILABLE", 503)
@@ -296,8 +346,8 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
                 fresh = _row(db, operation_id, token)
                 fresh["evidence"]["attempts"][-1]["process"] = asdict(process_identity)
                 _save(db, fresh, token)
-            _write(process.stdin, canonical(job), deadline)
-            ready_raw = _line(process.stdout, deadline); records.extend(ready_raw)
+            _write(process.stdin, canonical(job), deadline, guard=drain_errors)
+            ready_raw = _line(process.stdout, deadline, guard=drain_errors, records=records)
             ready = load(ready_raw)
             if ready != {"state": "STEP_READY", "job_digest": digest(canonical(job))}:
                 raise BootstrapError("BOOTSTRAP_HOST_READY_CONFLICT", 409)
@@ -316,63 +366,121 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
                 fresh["evidence"]["attempts"][-1]["state"] = "STEP_PERMITTED"
                 _save(db, fresh, token)
             process.stdin.close()
-            result_raw = _line(process.stdout, deadline); records.extend(result_raw)
+            result_raw = _line(process.stdout, deadline, guard=drain_errors, records=records)
             result = load(result_raw)
-            exit_code = process.wait(timeout=max(.01, deadline-time.monotonic()))
+            protocol_size = len(records)
+            while process.poll() is None:
+                drain_errors()
+                drain_tail()
+                if time.monotonic() >= deadline:
+                    raise BootstrapError("BOOTSTRAP_HOST_DEADLINE", 409)
+                time.sleep(.01)
+            exit_code = process.wait(timeout=.01)
+            drain_errors()
+            drain_tail()
+            if len(records) != protocol_size:
+                raise BootstrapError("BOOTSTRAP_HOST_UNEXPECTED_OUTPUT", 409)
+            _require_group_stopped(process.pid)
             if exit_code or result.get("state") != "STEP_COMPLETED" or result.get("step") != step:
                 raise BootstrapError(result.get("error", "BOOTSTRAP_HOST_STEP_FAILED"), 409)
-            if stderr_path.stat().st_size > 262144:
-                raise BootstrapError("BOOTSTRAP_HOST_ERROR_OUTPUT_LIMIT", 409)
-            with authority.store(root, write=True, expected_source=source_identity) as db:
-                fresh = _row(db, operation_id, token)
-                fresh["evidence"]["known"].update(result["result"])
-                fresh["evidence"]["completed_steps"].append(step)
-                fresh["evidence"]["attempts"][-1].update(state="STEP_COMPLETED", exit_code=exit_code)
-                _save(db, fresh, token)
-            return result["result"]
     finally:
         primary = sys.exc_info()[1]
         cleanup_errors = []
         if process is not None:
-            # Releasing stdin first lets an unpermitted, unidentified own child
-            # stop at EOF. No PID-only group kill can target a reused process.
+            # Each close/stop/wait/drain is independent. A failure in one may
+            # not skip actual process reconciliation or erase the primary.
             try:
                 if process.stdin is not None and not process.stdin.closed:
                     process.stdin.close()
             except OSError as error:
-                cleanup_errors.append(type(error).__name__)
+                cleanup_errors.append(error)
             try:
                 if process.poll() is None and process_identity is not None and verify_process_identity(process_identity) == "MATCH":
                     os.killpg(process.pid, signal.SIGKILL)
             except OSError as error:
-                cleanup_errors.append(type(error).__name__)
+                cleanup_errors.append(error)
             try:
                 process.wait(timeout=5)
             except subprocess.SubprocessError as error:
-                cleanup_errors.append(type(error).__name__)
-            finally:
-                if process.stdout is not None and not process.stdout.closed:
-                    process.stdout.close()
-        # Evidence retention is independent of process cleanup success. Keep
-        # the original failure and exact process identity for safe readback.
-        with stdout_path.open("xb") as saved:
-            saved.write(records)
-        stdout_path.chmod(0o600)
+                cleanup_errors.append(error)
+            try:
+                _require_group_stopped(process.pid)
+            except (OSError, BootstrapError) as error:
+                cleanup_errors.append(error)
+            try:
+                # The context-managed sink may have closed while unwinding.
+                # Reopen only that same private file, retaining the final tail.
+                if error_descriptor is not None:
+                    with os.fdopen(error_descriptor, "ab", closefd=False) as saved_errors:
+                        error_sink = saved_errors
+                        drain_errors()
+                drain_tail()
+            except (OSError, ValueError, BootstrapError) as error:
+                cleanup_errors.append(error)
+            for stream in (process.stdout, process.stderr):
+                try:
+                    if stream is not None and not stream.closed:
+                        stream.close()
+                except OSError as error:
+                    cleanup_errors.append(error)
+        if error_descriptor is not None:
+            try:
+                os.close(error_descriptor)
+            except OSError as error:
+                cleanup_errors.append(error)
+        try:
+            with stdout_path.open("xb") as saved:
+                saved.write(records)
+            stdout_path.chmod(0o600)
+        except OSError as error:
+            cleanup_errors.append(error)
         if cleanup_errors:
             cleanup_path = path / "evidence" / (attempt["attempt_id"]+".cleanup.json")
-            with cleanup_path.open("xb") as saved:
-                saved.write(canonical({"primary": type(primary).__name__ if primary else None,
-                    "cleanup_errors": cleanup_errors, "stopped": process.poll() is not None,
-                    "process": asdict(process_identity) if process_identity else None}))
-            cleanup_path.chmod(0o600)
-            if primary is None:
-                raise BootstrapError("BOOTSTRAP_HOST_STOP_UNCONFIRMED", 503)
+            try:
+                with cleanup_path.open("xb") as saved:
+                    saved.write(canonical({"primary": _private_error(primary),
+                        "cleanup_errors": [_private_error(error) for error in cleanup_errors],
+                        "parent_stopped": process is None or process.poll() is not None,
+                        "process": asdict(process_identity) if process_identity else None}))
+                cleanup_path.chmod(0o600)
+            except OSError as error:
+                cleanup_errors.append(error)
+            raise CleanupFailure(primary, cleanup_errors) from primary
+    # Only durable primary logs plus confirmed whole-group stop can advance the
+    # original step. These are observations, not a fresh effect authorization.
+    with authority.store(root, write=True, expected_source=source_identity) as db:
+        fresh = _row(db, operation_id, token)
+        fresh["evidence"]["known"].update(result["result"])
+        fresh["evidence"]["completed_steps"].append(step)
+        fresh["evidence"]["attempts"][-1].update(state="STEP_COMPLETED", exit_code=exit_code)
+        _save(db, fresh, token)
+    return result["result"]
+
+
+def _private_error(error):
+    return None if error is None else {"type": type(error).__name__, "detail": str(error)[:2048]}
+
+
+class CleanupFailure(BootstrapError):
+    """Keep the actual primary and every cleanup exception; never a PASS."""
+    def __init__(self, primary, cleanup_errors):
+        super().__init__("BOOTSTRAP_HOST_CLEANUP_OR_EVIDENCE_FAILED", 503)
+        self.primary = primary
+        self.cleanup_errors = tuple(cleanup_errors)
+
+
+def _require_group_stopped(group: int) -> None:
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return
+    raise BootstrapError("BOOTSTRAP_HOST_GROUP_ACTIVE_OR_UNCERTAIN", 503)
 
 
 def _active_previous(row: dict) -> None:
     for attempt in row["evidence"]["attempts"]:
         record = attempt.get("process")
-        if record is None or attempt["state"] == "STEP_COMPLETED":
+        if record is None:
             continue
         expected = ProcessIdentity(**record)
         state = verify_process_identity(expected)
