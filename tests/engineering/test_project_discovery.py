@@ -353,6 +353,9 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
             before=connection.execute("SELECT * FROM ep_workspace_discovery_grants ORDER BY grant_id").fetchall()
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("PRAGMA legacy_alter_table=ON")
+            for table in ("ep_genesis_operations", "ep_genesis_grants"):
+                self.assertEqual(connection.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+                connection.execute("DROP TABLE " + table)
             connection.execute("DROP TABLE ep_execution_progress_grants")
             connection.execute("ALTER TABLE ep_installations RENAME TO fixture_installations76")
             connection.execute("CREATE TABLE ep_installations(instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 75))")
@@ -389,6 +392,9 @@ class ProjectDiscoveryMigrationTests(_DiscoveryFixture, unittest.TestCase):
         with storage.sqlite_connection(self.database) as connection:
             connection.execute("PRAGMA foreign_keys=OFF")
             connection.execute("PRAGMA legacy_alter_table=ON")
+            for table in ("ep_genesis_operations", "ep_genesis_grants"):
+                self.assertEqual(connection.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+                connection.execute("DROP TABLE " + table)
             connection.execute("DROP TABLE ep_workspace_discovery_grants")
             connection.execute("DROP TABLE ep_execution_progress_grants")
             connection.execute("ALTER TABLE ep_installations RENAME TO fixture_installations75")

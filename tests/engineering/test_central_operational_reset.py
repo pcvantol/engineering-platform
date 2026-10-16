@@ -853,6 +853,9 @@ class CentralOperationalResetTests(unittest.TestCase):
             connection.execute("UPDATE engineering_metadata SET value='67' WHERE key='installation.schema_version'")
             self.assertEqual(connection.execute("SELECT count(*) FROM ep_workspace_discovery_grants").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT count(*) FROM ep_execution_progress_grants").fetchone()[0],0)
+            for table in ("ep_genesis_operations", "ep_genesis_grants"):
+                self.assertEqual(connection.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+                connection.execute("DROP TABLE " + table)
             connection.execute("DROP TABLE ep_execution_progress_grants")
             connection.execute("DROP TABLE ep_workspace_discovery_grants")
             connection.execute("DROP TABLE ep_installation_pairing_credentials")

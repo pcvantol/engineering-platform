@@ -48,13 +48,14 @@ Small actual noneditable installed ownergrant→HTTP→37 exact files→real tru
 The owning EP installation-owner provisioning step prepares one private empty
 staging-directory capability before runtime admission. Its exact inode and
 parent identity are bound in the finite signed grant. CREATE_TARGET publishes
-that capability with Darwin renameatx_np(RENAME_EXCL), using held descriptors;
+that capability with Darwin renameatx_np(RENAME_EXCL), or the available Linux
+renameat2(RENAME_NOREPLACE), using held descriptors;
 existing targets, changed capabilities and cross-filesystem placement refuse.
 There is no mkdir-and-adopt, copy, delete or overwrite fallback. Unknown owner
 preparation leftovers remain private evidence and are not adopted on recovery.
 Native rights remain finite to the selected staging capability and target.
 
-Git blob/tree plumbing consumes the original admitted bytes with --no-filters;
+Fixed blob-only fast-import consumes the original admitted bytes without filters;
 it does not evaluate target clean filters or use git add. The original local
 root commit is deterministic for the original accepted operation. Actual full
 commit verification binds a finite metadata inode/content snapshot, checked
@@ -68,7 +69,7 @@ The native permission compiler has a real finite placement capacity. Private
 bootstrap storage uses the short owning `g/a` anchor; the public contract never
 accepts that host path. The same finite traversal policy excludes whole sibling
 subtrees, not only their directory names, and explicitly retains the selected
-installed runtime when it shares an ancestor. Ambiguous selected branch-name
+installed runtime and exact trusted validator leaf when they share an ancestor. Ambiguous selected branch-name
 prefixes and unsupported profile capacity refuse before physical effects.
 The prepared inode is a permitted child of its owning anchor, not a separate
 protected writable sandbox root. All other anchor children are denied. These
