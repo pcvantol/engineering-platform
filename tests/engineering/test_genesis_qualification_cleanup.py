@@ -70,3 +70,17 @@ class QualificationCleanupTests(unittest.TestCase):
             self.assertEqual(len(receipt['cleanup_errors']), 2)
             self.assertEqual(receipt['state'], 'FAILED')
             self.assertEqual([str(e) for e in found.exception.exceptions], ['actual first stop failed', 'actual first close failed'])
+            stop_error = RuntimeError('original stop error')
+            receipt_error = OSError('original receipt error')
+            case.stop.side_effect = [stop_error, None]
+            case.logs = []
+            with patch.object(qualification.socket, 'socket') as socket, patch.object(qualification, 'write_private', side_effect=receipt_error):
+                socket.return_value.__enter__.return_value.connect_ex.return_value = 1
+                with self.assertRaises(ExceptionGroup) as all_errors: case.finish()
+            self.assertEqual(all_errors.exception.exceptions, (stop_error, receipt_error))
+            case.record['state'] = 'PASS'; case.stop.side_effect = None
+            with patch.object(qualification.socket, 'socket') as socket, patch.object(qualification, 'write_private', side_effect=receipt_error):
+                socket.return_value.__enter__.return_value.connect_ex.return_value = 1
+                with self.assertRaises(ExceptionGroup) as receipt_only: case.finish()
+            self.assertEqual(case.record['state'], 'FAILED')
+            self.assertEqual(receipt_only.exception.exceptions, (receipt_error,))

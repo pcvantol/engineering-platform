@@ -78,7 +78,7 @@ class Case:
         self.workspace.mkdir(mode=0o700)
         self.target = self.workspace/'r'
         self.record = {'name': name, 'root': str(self.root), 'http': [], 'processes': [], 'boundaries': []}
-        self.logs, self.children = [], []
+        self.logs, self.children, self.observed_groups = [], [], set()
         self.evidence = args.output/name
         self.evidence.mkdir(mode=0o700)
         write_private(self.root/'.qualification-owner.json', {
@@ -178,6 +178,8 @@ class Case:
             operations = [{k: value[k] for k in ('attempts', 'completed_steps', 'known')}
                 for raw, in db.execute('SELECT evidence FROM ep_genesis_operations')
                 for value in (json.loads(raw),)]
+            self.observed_groups.update(attempt['process']['process_group'] for value in operations
+                for attempt in value['attempts'] if attempt.get('process'))
         return {'files': files, 'rows': rows, 'effect_ledger': operations}
 
     def barrier(self, p, marker):
@@ -198,16 +200,22 @@ class Case:
         raise TimeoutError('Real boundary not reached')
 
     def stop(self, p, crash=False):
-        groups = {p.pid}
+        groups = {p.pid, *getattr(self, 'observed_groups', set())}
         from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity, ProcessIdentity, _canonical_executable_identity
         # Recorded native groups are finite owning diagnostics, never signal
         # authority. Even an exited Server cannot hide a surviving native group.
         database = self.data/'epdata.sqlite' if hasattr(self, 'data') else None
+        inventory_error = None
         if database is not None and database.is_file():
-            with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
-                for raw, in db.execute('SELECT evidence FROM ep_genesis_operations'):
-                    for attempt in json.loads(raw)['attempts']:
-                        if attempt.get('process'): groups.add(attempt['process']['process_group'])
+            try:
+                with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
+                    for raw, in db.execute('SELECT evidence FROM ep_genesis_operations'):
+                        for attempt in json.loads(raw)['attempts']:
+                            if attempt.get('process'): groups.add(attempt['process']['process_group'])
+            except sqlite3.Error as error:
+                inventory_error = error
+                self.record.setdefault('cleanup_source_errors', []).append({'type': type(error).__name__, 'detail': str(error)})
+                if p.poll() is not None: raise RuntimeError('Exited parent and unavailable group inventory: uncertain cleanup') from error
         if p.poll() is None:
             # Stop the exact unreaped child before capturing descendants. No
             # PID-only helper kill and no new children racing the inventory.
@@ -259,6 +267,26 @@ class Case:
         self.record['processes'][self.children.index(p)].update(returncode=p.returncode, reaped=True)
 
     def run(self):
+        if self.name in {'canonical-conflicts', 'foreign-attachment', 'capacity'}:
+            if self.name != 'capacity':
+                declaration = json.loads(self.request['bundle']['files']['.engineering-platform/repository.json']['utf8'])
+                if self.name == 'foreign-attachment':
+                    declaration['project'].update(id='foreign-product', authority_repository_id='foreign-core')
+                    declaration['repository']['id'] = 'foreign-core'
+                    (self.target/'.engineering-platform').mkdir(mode=0o700, parents=True)
+                    write_private(self.target/'.engineering-platform/repository.json', declaration)
+                path = self.root/'existing-declaration.json'; write_private(path, declaration)
+                self.cli('server', 'register-topology', '--declaration', path)
+                if self.name == 'foreign-attachment':
+                    self.cli('server', 'bind-repository', '--project-id', 'foreign-product', '--repository-id', 'foreign-core', '--path', self.target)
+                    self.target.rename(self.workspace/'foreign-original')
+            self.start(); before = self.snapshot()
+            self.exchange('POST', self.path, 413 if self.name == 'capacity' else 409,
+                          {'padding': 'x'*524288} if self.name == 'capacity' else self.request)
+            assert before == self.snapshot() and before['rows']['ep_genesis_operations'] == 0
+            assert not self.target.exists() and not list((self.data/'g/evidence').iterdir())
+            self.record['final_snapshot'] = self.snapshot()
+            return
         if self.name == 'admission-refusals':
             self.start()
             before = self.snapshot()
@@ -285,13 +313,50 @@ class Case:
         point = {'lost-accept': 'ACCEPT', 'after-create': 'CREATE_TARGET', 'after-commit': 'GIT_REF',
                  'before-register': 'VERIFY_COMMIT', 'lost-success': 'REGISTER', 'revoke': 'CREATE_TARGET',
                  'expiry': 'CREATE_TARGET', 'source-loss': 'CREATE_TARGET', 'validator-pin': 'WRITE_FILES',
-                 'concurrency': 'ACCEPT_THREAD'}[self.name]
+                 'concurrency': 'ACCEPT_THREAD', 'target-swap': 'CREATE_TARGET', 'target-mode': 'WRITE_FILES',
+                 'source-corruption': 'CREATE_TARGET'}[self.name]
         p, marker = self.start(point)
         with ThreadPoolExecutor(max_workers=1) as pool:
             request = pool.submit(self.exchange, 'POST', self.path, None, self.request)
             self.barrier(p, marker)
             before = self.snapshot()
-            if self.name == 'concurrency':
+            if self.name in {'target-swap', 'target-mode'}:
+                if self.name == 'target-swap':
+                    self.target.rename(self.workspace/'original-target')
+                    self.target.mkdir(mode=0o700)
+                    sentinel = self.target/'foreign-sentinel'; sentinel.write_bytes(b'preserved foreign target')
+                else: (self.target/'README.md').chmod(0o600)
+                changed = self.snapshot()
+                p.send_signal(signal.SIGCONT); request.result(timeout=45)
+                assert self.record['http'][-1]['status'] == 409
+                after = self.snapshot()
+                assert changed['files'] == after['files'] and changed['rows'] == after['rows'], 'Foreign or changed target written'
+                if self.name == 'target-swap':
+                    assert sentinel.read_bytes() == b'preserved foreign target'
+                    self.target.rename(self.workspace/'preserved-foreign-target')
+                    (self.workspace/'original-target').rename(self.target)
+                else: (self.target/'README.md').chmod(0o644)
+                complete = self.exchange('POST', self.item+'/resume', 200)
+                assert complete['state'] == 'COMPLETE'
+            elif self.name == 'source-corruption':
+                database = self.data/'epdata.sqlite'; original = database.read_bytes()
+                with (self.evidence/'original-database.sqlite').open('xb') as saved:
+                    os.chmod(saved.fileno(), 0o600); saved.write(original)
+                with database.open('r+b') as changed: changed.write(b'corrupt-header!!\0')
+                corrupt = database.read_bytes()
+                with (self.evidence/'corrupt-database.sqlite').open('xb') as saved:
+                    os.chmod(saved.fileno(), 0o600); saved.write(corrupt)
+                p.send_signal(signal.SIGCONT); request.result(timeout=45)
+                assert self.record['http'][-1]['status'] == 500
+                assert database.read_bytes() == corrupt, 'Corrupt initialized source replaced'
+                # Preserve and restore the same own physical database inode.
+                # No new store, grant, operation, or historical success state.
+                self.stop(p); database.write_bytes(original); self.start()
+                assert before == self.snapshot()
+                self.exchange('GET', self.item, 200); assert before == self.snapshot()
+                complete = self.exchange('POST', self.item+'/resume', 200)
+                assert complete['state'] == 'COMPLETE'
+            elif self.name == 'concurrency':
                 duplicate = self.exchange('POST', self.path, 200, self.request)
                 assert duplicate['state'] == 'RESERVED' and before == self.snapshot()
                 changed = json.loads(json.dumps(self.request)); changed['effect_plan_binding']['plan_digest'] = 'a'*64
@@ -374,8 +439,11 @@ class Case:
         except BaseException as error: errors.append(error)
         self.record['cleanup_errors'] = [{'type': type(e).__name__, 'detail': str(e)} for e in errors]
         if errors: self.record['state'] = 'FAILED'
-        write_private(self.evidence/'receipt.json', self.record)
-        if errors: raise BaseExceptionGroup('Own cleanup incomplete; original failure and cleanup details retained', errors)
+        try: write_private(self.evidence/'receipt.json', self.record)
+        except BaseException as error: errors.append(error)
+        if errors:
+            self.record['state'] = 'FAILED'
+            raise BaseExceptionGroup('Own cleanup incomplete; original failure and cleanup details retained', errors)
 
 
 def main():

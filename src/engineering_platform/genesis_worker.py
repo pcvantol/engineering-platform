@@ -76,16 +76,19 @@ def create(scope: dict, *, prepared_parent_fd: int | None = None) -> dict:
             raise BootstrapError("BOOTSTRAP_PREPARED_CAPABILITY_CHANGED", 409)
         if list(identity(os.fstat(parent))) != scope["root_identity"]:
             raise BootstrapError("BOOTSTRAP_PARENT_CHANGED", 409)
-        if os.fstat(prepared).st_dev != os.fstat(parent).st_dev or sys.platform != "darwin":
+        if os.fstat(prepared).st_dev != os.fstat(parent).st_dev or sys.platform not in {"darwin", "linux"}:
             raise BootstrapError("BOOTSTRAP_ATOMIC_PUBLICATION_UNSUPPORTED", 422)
-        # Darwin's no-replace rename publishes the already owner-provisioned
+        # Native no-replace rename publishes the already owner-provisioned
         # inode. mkdir does not return an inode and cannot establish this proof.
         # No copy/delete, replacement, or exists-check fallback is permitted.
         library = ctypes.CDLL(None, use_errno=True)
-        rename = library.renameatx_np
+        name, flags = ("renameatx_np", 0x4) if sys.platform == "darwin" else ("renameat2", 0x1)
+        rename = getattr(library, name, None)
+        if rename is None:
+            raise BootstrapError("BOOTSTRAP_ATOMIC_PUBLICATION_UNSUPPORTED", 422)
         rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
         rename.restype = ctypes.c_int
-        if rename(source, os.fsencode(staging.name), parent, os.fsencode(scope["target_name"]), 0x4):
+        if rename(source, os.fsencode(staging.name), parent, os.fsencode(scope["target_name"]), flags):
             code = ctypes.get_errno()
             if code == errno.EEXIST:
                 raise BootstrapError("BOOTSTRAP_TARGET_EXISTS", 409)
