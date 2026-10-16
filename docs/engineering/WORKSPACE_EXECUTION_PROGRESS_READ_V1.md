@@ -2,7 +2,7 @@
 
 Owner Engineering Platform, assignment `L2-WORKSPACE-EXECUTION-PROGRESS-READ-V1-20261015`,
 JOIN `L2-L4-CENTRAL-MISSION-EA-PROGRESS-V1-20261015`.
-Implementation in progress; not yet a qualified consumer pin.
+Implementation protected-delivered; the qualified final-main pin is registered after the separate Finalization.
 Product 2.3.122, CENTRAL76, closed contract1.0. R34, HOB-EP01 and the local
 HOB-EP02 inspection remain closed; L3-R55 retains its qualified 2.3.121 inspection pin.
 
@@ -59,7 +59,7 @@ translation, missing report generation or business write occurs on these GETs.
 | submission/run | `ep_submissions`, `ep_parity_lifecycle_dispatches`, `ep_execution_runs` | Queue has null run; selected run must belong to exact project/repository and accepted submission. |
 | original accepted exchange | immutable Forge acceptance receipt or exact owner RETRIED/resolution chain | Internal retry does not mint a new HTTP receipt; bounded chain preserves original acceptance ID/digest; legacy v1.0 explicitly limited. |
 | attempt/root/retryparent | `execution_submission_attempt_links`, `execution_submission_attempts`, root submission and qualification lineage | Queued owner retry exposes PENDING_RUN with original known parent/root; missing modern preparation explicitly UNAVAILABLE; contradictory root/parent409. Original identities retained; retry is not a new logical EA. |
-| description | separately validated persisted Action Context Envelope | At most500 accepted redacted summary characters; missing/private-path content gives NOT_RECORDED. No runtime prompt or generated replacement. |
+| description | separately validated persisted Action Context Envelope | At most500 accepted redacted summary characters; missing content gives NOT_RECORDED and private-path content WITHHELD_PRIVACY. No runtime prompt or generated replacement. |
 | current phase and steps | `engineering_transactions`, `execution_lifecycle_events`; existing pure `execution_lifecycle.project_records` | Actual persisted checkpoint/events, intended pending steps separate; missing events unavailable. No timing/log-derived progress or percentage/ETA. |
 | historical transitions | same run's original ordered lifecycle events | At most100; missing history unavailable, over-limit409, not silently complete. SQLite CURRENT_TIMESTAMP is owning UTC and normalized explicitly. |
 | technical outcome | terminal checkpoint when recorded, otherwise dispatchstate | COMPLETE/BLOCKED/FAILED are EP outcomes, not Forge Mission acceptance. |
@@ -119,7 +119,7 @@ module gates plus strict changed executable-line >80.2%, independent Quality and
 Security, all required CI/OwnerAuthorization, protected implementation, separate
 nonempty Finalization and new exact-final-main installed HTTP/readback/handoff/
 actual-stop/cleanup evidence. No GUI/screenshot wave or consumer ACK is added.
-TDE remains separate and honest. Current source/docs are not delivery evidence.
+TDE remains separate and honest. Contract documentation does not substitute for the exact installed receipts in the terminal handoff.
 
 Privacy profile: accepted summaries containing either slash or backslash are withheld in full with `description_status=WITHHELD_PRIVACY`, including quoted and punctuation-adjacent host paths. No replacement summary is generated. Historical automated evidence waits retain `EXECUTION_HOST`; an actual operator merge wait remains `OPERATOR`.
 

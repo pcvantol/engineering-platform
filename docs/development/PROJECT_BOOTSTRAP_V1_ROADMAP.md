@@ -21,7 +21,8 @@ PLANNED. Source handles are not B8R identities. R34 and HOB-EP01 remain CLOSED.
 CENTRAL Mission/EA lifecycle/submission/run read companion under the existing
 PB-E5 reporting seam, mapping Workspace PB-W3-PROGRESS/HOB-EP03. See
 [owning contract and phase/source table](../engineering/WORKSPACE_EXECUTION_PROGRESS_READ_V1.md).
-This in-progress subset does not close PB-E5, PB-EQ or any full HOB-EP03 parent;
+The [protected-delivered scoped subset](WORKSPACE_EXECUTION_PROGRESS_READ_V1_DELIVERY.md)
+does not close PB-E5, PB-EQ or any full HOB-EP03 parent;
 DAG node identities/dependencies/statuses remain unchanged. No dashboard,
 execution, cancellation, assessment or provisioning is introduced. The qualified
 local inspection pin for L3-R55 remains unchanged.

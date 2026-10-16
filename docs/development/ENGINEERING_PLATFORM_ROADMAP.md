@@ -1110,7 +1110,9 @@ The planned home deployment of one authoritative Forge installation, one authori
 
 Assignment `L2-WORKSPACE-EXECUTION-PROGRESS-READ-V1-20261015` adds only the
 authenticated finite CENTRAL reporting/readback projection over existing
-Mission/EA submission, run and lifecycle records; implementation is in progress.
+Mission/EA submission, run and lifecycle records. The bounded implementation is protected-delivered;
+[scoped Finalization](WORKSPACE_EXECUTION_PROGRESS_READ_V1_DELIVERY.md) records
+its qualification boundary and terminal exact-final-main registration.
 [Owning source/phase/authority contract](../engineering/WORKSPACE_EXECUTION_PROGRESS_READ_V1.md)
 connects the existing PB-E5 reporting seam to Workspace PB-W3-PROGRESS/HOB-EP03.
 Existing open parent DAG nodes, execution authority, Mission acceptance and
