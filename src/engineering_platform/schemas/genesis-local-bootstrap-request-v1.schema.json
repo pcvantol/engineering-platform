@@ -1,0 +1,817 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+    },
+    "target_ref": {
+      "type": "string",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+    },
+    "effect_plan_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "decision_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "decision_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "plan_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "proposal_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "proposal_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "source_actor_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "source_instance_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        }
+      },
+      "required": [
+        "context_id",
+        "decision_digest",
+        "decision_id",
+        "plan_digest",
+        "plan_id",
+        "plan_revision",
+        "proposal_digest",
+        "proposal_id",
+        "source_actor_id",
+        "source_instance_id"
+      ]
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "type": "string",
+          "const": "pb-render/1.0"
+        },
+        "kind": {
+          "type": "string",
+          "const": "RENDERED_PROPOSAL_EXAMPLE"
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            ".engineering-platform/repository.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            ".gitattributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            ".gitignore": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "AGENTS.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "BOOTSTRAP.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "README.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/architecture/ARCHITECTURE.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/architecture/decisions/README.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/engineering/HANDOFF.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/engineering/VALIDATION.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/product/VISION.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/roadmap/ROADMAP.md": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "docs/roadmap/capability-dag.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baseline.lock.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/baseline-lock.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/capability.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/capability.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/catalog.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/catalog.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/dag.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/governance.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/input.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/manifest.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/operation-proposal.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/project-contract.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/project.schema.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/render_core.py": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/safe_io.py": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/schema.py": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/validate.py": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/baselines/portable-docs/1.0.0/validation.yml": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/bootstrap-manifest.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/project-contract.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/project.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/render-input.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "engineering/repository-governance.json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            },
+            "scripts/validate.sh": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "[0-9a-f]{64}"
+                },
+                "utf8": {
+                  "type": "string",
+                  "maxLength": 131072
+                }
+              },
+              "required": [
+                "sha256",
+                "utf8"
+              ]
+            }
+          },
+          "required": [
+            ".engineering-platform/repository.json",
+            ".gitattributes",
+            ".gitignore",
+            "AGENTS.md",
+            "BOOTSTRAP.md",
+            "README.md",
+            "docs/architecture/ARCHITECTURE.md",
+            "docs/architecture/decisions/README.md",
+            "docs/engineering/HANDOFF.md",
+            "docs/engineering/VALIDATION.md",
+            "docs/product/VISION.md",
+            "docs/roadmap/ROADMAP.md",
+            "docs/roadmap/capability-dag.json",
+            "engineering/baseline.lock.json",
+            "engineering/baselines/portable-docs/1.0.0/baseline-lock.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/capability.json",
+            "engineering/baselines/portable-docs/1.0.0/capability.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/catalog.json",
+            "engineering/baselines/portable-docs/1.0.0/catalog.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/dag.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/governance.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/input.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/manifest.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/operation-proposal.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/project-contract.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/project.schema.json",
+            "engineering/baselines/portable-docs/1.0.0/render_core.py",
+            "engineering/baselines/portable-docs/1.0.0/safe_io.py",
+            "engineering/baselines/portable-docs/1.0.0/schema.py",
+            "engineering/baselines/portable-docs/1.0.0/validate.py",
+            "engineering/baselines/portable-docs/1.0.0/validation.yml",
+            "engineering/bootstrap-manifest.json",
+            "engineering/project-contract.json",
+            "engineering/project.json",
+            "engineering/render-input.json",
+            "engineering/repository-governance.json",
+            "scripts/validate.sh"
+          ]
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "files"
+      ]
+    }
+  },
+  "required": [
+    "contract_version",
+    "operation_id",
+    "target_ref",
+    "effect_plan_binding",
+    "bundle"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:engineering-platform:genesis-local-bootstrap-request:1.0",
+  "title": "Exact finite CREATE_GENESIS_LOCAL admission; independent owner grant required"
+}

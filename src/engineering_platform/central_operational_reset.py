@@ -36,7 +36,7 @@ from .storage import sqlite_connection
 
 PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 2
-SCHEMA_VERSION = 76
+SCHEMA_VERSION = 77
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
 _INSTANCE_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -70,6 +70,7 @@ INSTALLATION_AND_CONFIGURATION = frozenset({
     "execution_migration_provenance",
 })
 SECURITY_AND_AUTHORITY_LEDGER = frozenset({
+    "ep_genesis_grants", "ep_genesis_operations",
     "ep_workspace_discovery_grants", "ep_execution_progress_grants",
     "ep_agent_pairing_codes", "ep_consumer_credential_recovery_operations",
     "ep_consumer_credentials", "ep_consumer_registrations", "ep_installation_pairing_credentials",
@@ -168,6 +169,7 @@ _KNOWN_TOP_LEVEL = frozenset({
     "operational-installation.json", "legacy-installation-adoption.json",
     "development-profile.json", "dependabot-producer-heartbeat.json",
     "central.sqlite", ".forge-ep-consumer-recovery.lock",
+    "genesis-local-v1", "genesis-local-v1.identity.json", "g", "g.identity.json",
 })
 _VERSIONED_RECOVERY_BACKUP = re.compile(
     r"epdata\.sqlite\.pre-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.backup"
@@ -1001,6 +1003,8 @@ def _walk_preserved_files(
                     raise OperationalResetError(code)
                 if stat.S_ISDIR(metadata.st_mode):
                     relative = path.relative_to(directory).as_posix()
+                    if root_name in {"genesis-local-v1", "g"} and not _genesis_directory_shape(relative):
+                        raise OperationalResetError("GENESIS_PRIVATE_SHAPE_UNKNOWN")
                     classification = _opaque_update_directory_classification(
                         root_name, path, relative,
                         expected_installation_id=expected_installation_id,
@@ -1024,6 +1028,19 @@ def _walk_preserved_files(
             except OSError as error:
                 raise OperationalResetError(code) from error
     return sorted(files), sorted(opaque, key=lambda item: item[0])
+
+
+def _genesis_directory_shape(relative: str) -> bool:
+    if relative in {"anchor", "a", "evidence", "locks"}:
+        return True
+    parts = relative.split("/")
+    if len(parts) < 2 or parts[0] not in {"anchor", "a"} or re.fullmatch(r"(?:stage-[0-9a-f]{32}|s[0-9a-f]{4})", parts[1]) is None:
+        return False
+    if len(parts) == 2:
+        return True
+    from .genesis_contract import PATHS
+    directories = {"/".join(name.split("/")[:index]) for name in PATHS for index in range(1, len(name.split("/")))}
+    return "/".join(parts[2:]) in directories
 
 
 def _open_opaque_directory(path: Path, *, device: int, inode: int) -> int:
@@ -1080,6 +1097,12 @@ def _nested_preserved_classification(
 ) -> str | None:
     """Classify only product-owned shapes inside preserved top-level roots."""
     parts = Path(relative).parts
+    if root_name in {"genesis-local-v1", "g"}:
+        if len(parts) == 2 and parts[0] == "evidence" and re.fullmatch(r"[0-9a-f]{32}\.(?:stdout|stderr|cleanup\.json)", parts[1]):
+            return "GENESIS_ORIGINAL_EFFECT_EVIDENCE"
+        if len(parts) == 2 and parts[0] == "locks" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\.lock", parts[1]):
+            return "GENESIS_RESOURCE_OWNERSHIP"
+        return None
     if root_name == "runtime":
         if relative in {
             "store-authority.json", "engineering-dashboard-relay",
@@ -1217,7 +1240,7 @@ def _external_inventory_bound(
         preserved.append(entry)
         if path.is_dir() and not path.is_symlink() and path.name in {
             "runtime", "operations", "recovery", "migration", "backups",
-            "operational-reset-archive",
+            "operational-reset-archive", "genesis-local-v1", "g",
         }:
             nested_files, opaque_boundaries = _walk_preserved_files(
                 path, root_name=path.name, code="EXTERNAL_SYMLINK_UNSAFE",
@@ -1285,6 +1308,10 @@ def _external_inventory(
 
 
 def _runtime_activity(data_root: Path) -> dict[str, object]:
+    if any((data_root / name).exists() for name in ("genesis-local-v1", "genesis-local-v1.identity.json", "g", "g.identity.json")):
+        from .genesis_service import maintenance_activity
+        if maintenance_activity(data_root):
+            return {"active": True, "reason": "GENESIS_HOST_ACTIVE_OR_UNCERTAIN"}
     try:
         payload = json.loads((data_root / "runtime.json").read_text(encoding="utf-8"))
     except FileNotFoundError:

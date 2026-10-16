@@ -489,6 +489,166 @@
           }
         }
       ]
+    },
+    {
+      "name": "Create local Genesis operation (unissued grant rejected)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer postman-unissued-bootstrap-token-000"
+          },
+          {
+            "key": "EP-Bootstrap-Contract",
+            "value": "1.0"
+          },
+          {
+            "key": "EP-Instance-ID",
+            "value": "postman-unissued-instance"
+          },
+          {
+            "key": "EP-Host-ID",
+            "value": "postman-unissued-host"
+          },
+          {
+            "key": "EP-Consumer-ID",
+            "value": "postman-unissued-consumer"
+          },
+          {
+            "key": "EP-Principal",
+            "value": "postman-unissued-principal"
+          },
+          {
+            "key": "EP-Audience",
+            "value": "genesis-bootstrap"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/bootstrap/genesis/operations",
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status 401\", function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read original local Genesis operation (unissued grant rejected)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer postman-unissued-bootstrap-token-000"
+          },
+          {
+            "key": "EP-Bootstrap-Contract",
+            "value": "1.0"
+          },
+          {
+            "key": "EP-Instance-ID",
+            "value": "postman-unissued-instance"
+          },
+          {
+            "key": "EP-Host-ID",
+            "value": "postman-unissued-host"
+          },
+          {
+            "key": "EP-Consumer-ID",
+            "value": "postman-unissued-consumer"
+          },
+          {
+            "key": "EP-Principal",
+            "value": "postman-unissued-principal"
+          },
+          {
+            "key": "EP-Audience",
+            "value": "genesis-bootstrap"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/bootstrap/genesis/operations/{operation_id}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status 401\", function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Resume original local Genesis operation (unissued grant rejected)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer postman-unissued-bootstrap-token-000"
+          },
+          {
+            "key": "EP-Bootstrap-Contract",
+            "value": "1.0"
+          },
+          {
+            "key": "EP-Instance-ID",
+            "value": "postman-unissued-instance"
+          },
+          {
+            "key": "EP-Host-ID",
+            "value": "postman-unissued-host"
+          },
+          {
+            "key": "EP-Consumer-ID",
+            "value": "postman-unissued-consumer"
+          },
+          {
+            "key": "EP-Principal",
+            "value": "postman-unissued-principal"
+          },
+          {
+            "key": "EP-Audience",
+            "value": "genesis-bootstrap"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/bootstrap/genesis/operations/{operation_id}/resume",
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status 401\", function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
