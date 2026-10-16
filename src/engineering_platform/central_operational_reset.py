@@ -36,7 +36,7 @@ from .storage import sqlite_connection
 
 PROFILE = "EP_CENTRAL_OPERATIONAL_HISTORY_V1"
 PLAN_VERSION = 2
-SCHEMA_VERSION = 76
+SCHEMA_VERSION = 77
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}")
 _INSTANCE_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -70,6 +70,7 @@ INSTALLATION_AND_CONFIGURATION = frozenset({
     "execution_migration_provenance",
 })
 SECURITY_AND_AUTHORITY_LEDGER = frozenset({
+    "ep_genesis_grants", "ep_genesis_operations",
     "ep_workspace_discovery_grants", "ep_execution_progress_grants",
     "ep_agent_pairing_codes", "ep_consumer_credential_recovery_operations",
     "ep_consumer_credentials", "ep_consumer_registrations", "ep_installation_pairing_credentials",

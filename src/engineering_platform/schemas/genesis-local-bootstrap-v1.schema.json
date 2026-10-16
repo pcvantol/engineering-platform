@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:engineering-platform:genesis-local-bootstrap:1.0",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "type": "string",
+          "const": "1.0"
+        },
+        "operation_kind": {
+          "type": "string",
+          "const": "CREATE_GENESIS_LOCAL"
+        },
+        "operation_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "producer_version": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "execution_mode": {
+          "type": "string",
+          "const": "GENESIS"
+        },
+        "baseline": {
+          "type": "string",
+          "const": "portable-docs/1.0.0"
+        },
+        "authorization_ref": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "placement_precondition": {
+          "type": "string",
+          "const": "ABSENT_VERIFIED_AT_ADMISSION"
+        },
+        "request_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "target_ref": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "RESERVED",
+            "EXECUTING",
+            "COMPLETE",
+            "PARTIAL",
+            "EFFECT_UNCERTAIN"
+          ]
+        },
+        "effect_plan_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "context_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "decision_digest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}"
+            },
+            "decision_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "plan_digest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}"
+            },
+            "plan_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "plan_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            },
+            "proposal_digest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}"
+            },
+            "proposal_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "source_actor_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "source_instance_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            }
+          },
+          "required": [
+            "context_id",
+            "decision_digest",
+            "decision_id",
+            "plan_digest",
+            "plan_id",
+            "plan_revision",
+            "proposal_digest",
+            "proposal_id",
+            "source_actor_id",
+            "source_instance_id"
+          ]
+        },
+        "bundle_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "input_digest": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "instance_id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+        },
+        "host_id": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "authority_repository_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "repository_id": {
+              "type": "string",
+              "pattern": "[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "RESERVED",
+                "COMMITTED",
+                "REGISTERED"
+              ]
+            }
+          },
+          "required": [
+            "project_id",
+            "authority_repository_id",
+            "repository_id",
+            "state"
+          ]
+        },
+        "completed_steps": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "PREFLIGHT",
+              "CREATE_TARGET",
+              "WRITE_FILES",
+              "VALIDATE_DOCS",
+              "GIT_INIT",
+              "GIT_PREPARE",
+              "GIT_OBJECT",
+              "GIT_REF",
+              "VERIFY_COMMIT",
+              "REGISTER_AND_ATTACH"
+            ]
+          }
+        },
+        "step_effects": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "attempt_id": {
+                "type": "string",
+                "pattern": "[0-9a-f]{32}"
+              },
+              "step": {
+                "type": "string",
+                "enum": [
+                  "PREFLIGHT",
+                  "CREATE_TARGET",
+                  "WRITE_FILES",
+                  "VALIDATE_DOCS",
+                  "GIT_INIT",
+                  "GIT_PREPARE",
+                  "GIT_OBJECT",
+                  "GIT_REF",
+                  "VERIFY_COMMIT",
+                  "REGISTER_AND_ATTACH"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "INTENT_RECORDED",
+                  "STEP_PERMITTED",
+                  "STEP_COMPLETED"
+                ]
+              },
+              "exit_code": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": -255,
+                "maximum": 255
+              },
+              "private_evidence_ref": {
+                "type": "string",
+                "pattern": "genesis-attempt:[0-9a-f]{32}"
+              }
+            },
+            "required": [
+              "attempt_id",
+              "step",
+              "outcome",
+              "exit_code",
+              "private_evidence_ref"
+            ]
+          }
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "[0-9a-f]{40}"
+        },
+        "tree": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "[0-9a-f]{40}"
+        },
+        "validator_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "[0-9a-f]{64}"
+        },
+        "validation": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "VALIDATED_PROPOSAL"
+            },
+            "manifest_digest": {
+              "type": "string",
+              "pattern": "[0-9a-f]{64}"
+            },
+            "product_code_coverage": {
+              "type": "string",
+              "const": "NOT_APPLICABLE_NO_PRODUCT_CODE"
+            },
+            "artifacts": {
+              "type": "integer",
+              "const": 37
+            }
+          },
+          "required": [
+            "state",
+            "manifest_digest",
+            "product_code_coverage",
+            "artifacts"
+          ]
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "BOOTSTRAP_[A-Z0-9_]{1,96}"
+        },
+        "source_updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "forge_readiness": {
+          "type": "string",
+          "const": "NOT_OWNED_BY_EP"
+        },
+        "remote_governance": {
+          "type": "string",
+          "const": "NOT_APPLICABLE_GENESIS"
+        },
+        "product_code_coverage": {
+          "type": "string",
+          "const": "NOT_APPLICABLE_NO_PRODUCT_CODE"
+        },
+        "in_repository_validation_command": {
+          "type": "string",
+          "const": "NOT_QUALIFIED_AFTER_GIT_METADATA"
+        },
+        "effect_result_semantics": {
+          "type": "string",
+          "const": "ORIGINAL_OPERATION_AS_OF_RECORDED_STEP_EVIDENCE"
+        }
+      },
+      "required": [
+        "contract_version",
+        "operation_kind",
+        "operation_id",
+        "producer_version",
+        "execution_mode",
+        "baseline",
+        "authorization_ref",
+        "placement_precondition",
+        "request_digest",
+        "target_ref",
+        "state",
+        "effect_plan_binding",
+        "bundle_digest",
+        "manifest_digest",
+        "input_digest",
+        "instance_id",
+        "host_id",
+        "identity",
+        "completed_steps",
+        "step_effects",
+        "commit",
+        "tree",
+        "validator_sha256",
+        "validation",
+        "last_error",
+        "source_updated_at",
+        "observed_at",
+        "forge_readiness",
+        "remote_governance",
+        "product_code_coverage",
+        "in_repository_validation_command",
+        "effect_result_semantics"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string",
+          "pattern": "BOOTSTRAP_[A-Z0-9_]{1,96}"
+        }
+      },
+      "required": [
+        "error"
+      ]
+    }
+  ]
+}

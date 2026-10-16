@@ -39,6 +39,7 @@ from uuid import uuid4
 
 from . import installation_pairing
 from . import project_discovery, execution_progress, execution_progress_authority
+from . import genesis_authority, genesis_service
 from . import preproject_service
 from . import agent_trust
 from . import central_database
@@ -151,7 +152,7 @@ SERVER_CONFIGURATION_VERSION = 3
 # bootstrap is deliberately separate from the retired predecessor migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 76
+SERVER_STORE_SCHEMA_VERSION = 77
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 HTTP_JSON_OPENAPI_PATH = "/v1/openapi.json"
@@ -215,6 +216,7 @@ def _http_json_openapi_document() -> dict[str, object]:
             **project_discovery.openapi_paths(),
             **execution_progress.openapi_paths(),
             **preproject_service.openapi_paths(),
+            **genesis_service.openapi_paths(),
             "/v1/projects/{project_id}/submissions/{submission_id}/effect-result": {
                 "get": {
                     "summary": "Read the producer-bound FME result and exact artifact bytes",
@@ -449,6 +451,8 @@ def _http_json_openapi_document() -> dict[str, object]:
         },
         "components": {
             "securitySchemes": {
+                "bootstrapBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
+                    "description": "Separate finite owner provisioning grant for one exact absent local Genesis operation; no read-credential fallback."},
                 "inspectionBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque",
                     "description": "Separate finite owner-issued pre-project INSPECT_READ; never discovery, submission or admin authority."},
                 "executionProgressBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque", "description": "Separate owner-issued finite EXECUTION_PROGRESS_READ only"},
@@ -754,6 +758,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_agent_repository_attachments",
         "ep_local_repository_bindings",
         "ep_execution_progress_grants",
+        "ep_genesis_grants",
+        "ep_genesis_operations",
         "ep_submissions",
         "ep_parallel_action_graphs",
         "ep_parallel_action_repository_grants",
@@ -1010,6 +1016,7 @@ def _install_current_schema(connection: sqlite3.Connection, identity: RuntimeIde
     installation_pairing.install_schema(connection)
     project_discovery.install_schema(connection)
     execution_progress_authority.install_schema(connection)
+    genesis_authority.install_schema(connection)
     _install_forge_action_context_schema(connection)
     _install_forge_planning_context_schema(connection)
     _install_execution_host_evidence_schema(connection)
@@ -2335,6 +2342,18 @@ def _migrate_schema_76(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE engineering_metadata SET value='76' WHERE key='installation.schema_version'")
 
 
+def _migrate_schema_77(connection: sqlite3.Connection) -> None:
+    """Add independent Genesis grants/reservations without fake project runs."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema76")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version BETWEEN 41 AND 77))")
+    connection.execute("INSERT INTO ep_installations SELECT instance_id,created_at,77 FROM ep_installations_schema76")
+    connection.execute("DROP TABLE ep_installations_schema76")
+    genesis_authority.install_schema(connection)
+    central_operational_reset.install_writer_fences(connection)
+    connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(77)")
+    connection.execute("UPDATE engineering_metadata SET value='77' WHERE key='installation.schema_version'")
+
+
 _SERVER_SCHEMA_UPGRADE_STEPS = (
     (42, _migrate_schema_42),
     (43, _migrate_schema_43),
@@ -2371,6 +2390,7 @@ _SERVER_SCHEMA_UPGRADE_STEPS = (
     (74, _migrate_schema_74),
     (75, _migrate_schema_75),
     (76, _migrate_schema_76),
+    (77, _migrate_schema_77),
 )
 _SUPPORTED_SERVER_SCHEMA_VERSIONS = frozenset(
     range(41, SERVER_STORE_SCHEMA_VERSION + 1)
@@ -2394,6 +2414,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
                 installation_pairing.validate_schema(connection)
                 project_discovery.validate_schema(connection)
                 execution_progress_authority.validate_schema(connection)
+                genesis_authority.validate_schema(connection)
             except installation_pairing.InstallationPairingError as error:
                 raise ServerConfigurationError("EP installation pairing schema is invalid.") from error
             except (project_discovery.DiscoveryError, execution_progress.ProgressError) as error:
@@ -7527,7 +7548,78 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(503, {"error": "INSPECTION_OWNER_UNAVAILABLE"}, cache_control="no-store")
         return True
 
+    def _genesis_bootstrap(self, method: str) -> bool:
+        request = urlsplit(self.path)
+        match = re.fullmatch(r"/v1/bootstrap/genesis/operations(?:/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(/resume)?)?", request.path)
+        if match is None:
+            return False
+        from .genesis_contract import BootstrapError, load, MAX_BODY
+        try:
+            keys = ("Authorization", "Content-Length", "Content-Type", *genesis_authority.HEADERS)
+            if (request.query or self.headers.get("Transfer-Encoding") is not None
+                    or any(len(self.headers.get_all(k, [])) > 1 for k in keys)
+                    or any(len(self.headers.get_all(k, [])) != 1 for k in ("Authorization", *genesis_authority.HEADERS))):
+                raise BootstrapError("BOOTSTRAP_REQUEST_INVALID")
+            authorization = self.headers.get("Authorization", "")
+            token = authorization[7:] if authorization.startswith("Bearer ") else None
+            headers = {key: self.headers.get(key, "") for key in genesis_authority.HEADERS}
+            source = getattr(self.server, "genesis_source_identity", None)
+            # Authenticate before waiting for an untrusted upload body.
+            with genesis_authority.store(self.server.data_root, expected_source=source) as db:
+                genesis_authority.authenticate(db, token, headers)
+            body = None
+            if method == "POST" and match.group(1) is None:
+                text_length = self.headers.get("Content-Length", "")
+                if not re.fullmatch(r"[0-9]{1,6}", text_length) or self.headers.get("Content-Type") != "application/json":
+                    raise BootstrapError("BOOTSTRAP_BODY_REQUIRED")
+                length = int(text_length)
+                if not 0 < length <= MAX_BODY:
+                    raise BootstrapError("BOOTSTRAP_BODY_LIMIT", 413)
+                deadline, raw = time.monotonic()+2, bytearray()
+                old_timeout = self.connection.gettimeout()
+                try:
+                    while len(raw) < length:
+                        remaining = deadline-time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("bootstrap body deadline")
+                        self.connection.settimeout(remaining)
+                        chunk = self.rfile.read1(length-len(raw))
+                        if not chunk:
+                            raise BootstrapError("BOOTSTRAP_BODY_INCOMPLETE")
+                        raw.extend(chunk)
+                finally:
+                    self.connection.settimeout(old_timeout)
+                body = load(bytes(raw))
+                if not isinstance(body, dict):
+                    raise BootstrapError("BOOTSTRAP_REQUEST_INVALID")
+                operation_id = body.get("operation_id")
+            elif (method == "GET" and match.group(1) and not match.group(2)
+                    or method == "POST" and match.group(2)):
+                if self.headers.get("Content-Length") not in (None, "0"):
+                    raise BootstrapError("BOOTSTRAP_BODY_FORBIDDEN")
+                operation_id = match.group(1)
+            else:
+                raise BootstrapError("BOOTSTRAP_METHOD_NOT_ALLOWED", 405)
+            genesis_service.operation(self.server.data_root, token=token, headers=headers,
+                operation_id=operation_id, body=body, resume=bool(match.group(2)), source_identity=source,
+                publish=lambda result, instance, check: self._send(200, result, instance,
+                    cache_control="no-store", before_headers=check))
+        except BootstrapError as error:
+            self._send(error.status, {"error": error.code}, cache_control="no-store")
+        except TimeoutError:
+            self.close_connection = True
+            self._send(408, {"error": "BOOTSTRAP_BODY_TIMEOUT"}, cache_control="no-store")
+        except sqlite3.DatabaseError:
+            self._send(500, {"error": "BOOTSTRAP_SOURCE_CORRUPT"}, cache_control="no-store")
+        except OSError:
+            self._send(503, {"error": "BOOTSTRAP_SOURCE_OR_HOST_UNAVAILABLE"}, cache_control="no-store")
+        except (ValueError, KeyError, TypeError):
+            self._send(500, {"error": "BOOTSTRAP_STORED_EVIDENCE_INVALID"}, cache_control="no-store")
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
+        if self._genesis_bootstrap("GET"):
+            return
         if self._preproject_inspection("GET"):
             return
         request = urlsplit(self.path)
@@ -8124,6 +8216,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self._send(200, report, str(report["instance_id"]))
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._genesis_bootstrap("POST"):
+            return
         if self._preproject_inspection("POST"):
             return
         if urlsplit(self.path).path.startswith("/api/"):
@@ -8340,6 +8434,7 @@ def serve(
     server = _ConsoleHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
     server.execution_progress_source_identity = execution_progress.source_identity(data_root / SERVER_DATABASE_FILENAME)
+    server.genesis_source_identity = genesis_authority.database_identity(data_root)
     server.central_data_transfer_lock = RLock()  # type: ignore[attr-defined]
     server.central_data_transfer_active = False  # type: ignore[attr-defined]
     server.restart_after_shutdown = False  # type: ignore[attr-defined]
