@@ -203,6 +203,21 @@ class OwningBoundaryTests(unittest.TestCase):
             resume=True, publish=lambda result, instance, check: (check(), results.append(result)))
         self.assertEqual((results[0]['state'], results[0]['commit']), ('COMPLETE', known['commit']))
 
+    def test_real_git_object_plumbing_under_modeled_security_sha1_prohibition(self):
+        from engineering_platform import genesis_worker as worker
+        original_sha1 = worker.hashlib.sha1
+        def compatibility_hash(raw, **kwargs):
+            if kwargs.get('usedforsecurity') is not False:
+                raise ValueError('modeled security policy forbids SHA1 security use')
+            return original_sha1(raw, **kwargs)
+        # This models only the constructor policy; Git object creation and
+        # verification are real. It does not claim an actual FIPS-qualified OS.
+        with patch.object(worker.hashlib, 'sha1', side_effect=compatibility_hash):
+            scope, known = self._admitted_committed()
+        self.assertTrue(known['committed_declaration_verified'])
+        with authority.store(self.data) as db:
+            self.assertEqual(authority.authenticate(db, self.grant['credential'], self.headers)[0], 'synthetic-grant')
+
     def invoke(self, command, *, value=None, token=None, extra=()):
         args = [command, '--data-root', str(self.data), '--expected-instance-id', self.instance, *extra]
         if value is not None:

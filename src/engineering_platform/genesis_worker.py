@@ -350,7 +350,9 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
         parts = name.split("/")
         for part in parts[:-1]:
             node = node.setdefault(part, {})
-        expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        # Git's object-format identity is compatibility data. Authorization
+        # and exact original document integrity use independent SHA256/HMAC.
+        expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False).hexdigest()
         node[parts[-1]] = expected
         expected_blobs.append(expected)
         blob_commands.append(b"blob\nmark :"+str(mark).encode()+b"\ndata "+str(len(raw)).encode()+b"\n"+raw+b"\nget-mark :"+str(mark).encode()+b"\n")
@@ -370,7 +372,7 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
             entries.append(mode+b" "+kind+b" "+value.encode()+b"\t"+name.encode()+b"\0")
             raw_entries.append(mode+b" "+name.encode()+b"\0"+bytes.fromhex(value))
         raw = b"".join(raw_entries)
-        object_id = hashlib.sha1(b"tree "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+        object_id = hashlib.sha1(b"tree "+str(len(raw)).encode()+b"\0"+raw, usedforsecurity=False).hexdigest()
         tree_commands.append(b"".join(entries)+b"\0")
         expected_trees.append(object_id)
         return object_id
@@ -383,7 +385,7 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
     author = str(accepted_at).encode() + b" +0000"
     raw = declaration + author + b"\ncommitter Engineering Platform Bootstrap <bootstrap@localhost> " + author
     raw += b"\n\nCREATE_GENESIS_LOCAL " + scope["operation_id"].encode() + b"\n"
-    commit = hashlib.sha1(b"commit " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+    commit = hashlib.sha1(b"commit " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False).hexdigest()
     return {"tree": tree, "commit": commit, "commit_utf8": raw.decode()}
 
 
