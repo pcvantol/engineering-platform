@@ -69,14 +69,18 @@ ordinary installed HTTP proof has12 captured responses plus one genuinely
 failing independent cross-project negative response/client exit1. Actual owning
 synthetic ingress, dispatcher, StateStore, queue and qualification persistence
 supply the observed states; these are deterministic fixtures, not live model or
-target engineering qualification. COMPLETE/BLOCKED/FAILED, operator versus
-automatic waits, owner retry, healthy empty, old-credential/scope refusal,
+target engineering qualification. COMPLETE/BLOCKED/FAILED, recorded operator-merge
+history, automatic quality-control processing, owner retry, healthy empty,
+old-credential/scope refusal,
 revoke, lost reply, checkout-unbound history and a separate OS restart are
 covered. No new submission/run is created by the reads or reconnect. All owning
 operational/derived business-table hashes and target manifests remain unchanged
 by each read; ordinary background component logging is separate. Both own
 Servers actually stop and their listeners close. Original private records are
 archived and byte-verified before removal of the ended own fixture.
+Automatic terminal-evidence waits (`WAIT_FOR_TERMINAL_EVIDENCE` /
+`AUTOMATED_CHECK_EVIDENCE`) are covered separately by owning source/unit
+regressions; they are not claimed as observed Small8 HTTP captures.
 
 Each of eight changed production files has strictly >80.2% executable-line
 coverage. The changed reader has fresh241/277=87.0036%; seven other files are
@@ -152,7 +156,7 @@ with that limitation. Future private capture paths use exclusive creation.
 
 ## Final-main and consumer handoff
 
-This documentary Finalization has its own independent reviews, normal checks
+This documentary Finalization requires its own independent reviews, normal checks
 and protected merge. After that merge, build a NEW ordinary wheel from the actual
 exact final-main source, verify every packaged file and actual child import,
 and run a NEW outside-checkout installed HTTP/scope/snapshot/lost-response/
