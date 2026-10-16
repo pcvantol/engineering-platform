@@ -42,3 +42,21 @@ local inspection pin for L3-R55 remains unchanged.
 PB-E0/PB-F0 align published immutable contract fixtures. PB-E1 consumes the qualified P-TRANSPORT/authority subset, not the whole future installer/Agent-fleet programme. PB-EQ may use Forge-produced contract fixtures without requiring final Forge PB-FQ. Forge PB-F3 consumes PB-E1, PB-F4/PB-F5 consume mode results, and PB-FQ consumes PB-EQ. There is no cross-product cycle and no dependency on Workspace UI.
 
 Genesis and Managed implementation can proceed independently after E1. Promotion joins them. Qualification of the new operation must not alter the current Mission-3 acceptance or install new runtimes during a running test. Ordinary feature delivery and active #271/#272 changes are outside this documentation increment.
+
+## Bounded Genesis local creation subset
+
+`L2-GENESIS-LOCAL-BOOTSTRAP-V1-20261016` delivers only the selected PB-E0/E1/E2
+and necessary E5 subset for CREATE_GENESIS_LOCAL, portable-docs/1.0.0,
+LOCAL_POSIX, one absent authority target and DOCUMENT_ONLY/NO_PRODUCT_CODE.
+The owning [contract](../engineering/GENESIS_LOCAL_BOOTSTRAP_V1.md) and
+[scoped delivery record](GENESIS_LOCAL_BOOTSTRAP_V1_DELIVERY.md) bind the original
+37-document proposal to separate finite EP effect authority, physical
+reservation, trusted external validation before Git metadata, actual local
+commit, committed declaration/B8R attachment and original-operation recovery.
+
+Complete Genesis/unborn/existing adoption, Managed birth/promotion, full PB-EQ
+and parent nodes remain open; DAG node identities/dependencies/statuses remain
+unchanged. Technical EP completion is not Forge Mission acceptance or full
+engineering readiness. No new engine, renderer, dashboard, runtime activation
+or automatic successor. Closed local inspection and progress-read deliveries
+and their qualified pins remain unchanged.
