@@ -169,7 +169,10 @@ class Case:
             rows = {t: db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in (
                 'ep_genesis_operations', 'ep_project_registrations', 'ep_repository_registrations',
                 'ep_local_repository_bindings', 'ep_submissions', 'ep_execution_runs', 'engineering_transactions')}
-        return {'files': files, 'rows': rows}
+            operations = [{k: value[k] for k in ('attempts', 'completed_steps', 'known')}
+                for raw, in db.execute('SELECT evidence FROM ep_genesis_operations')
+                for value in (json.loads(raw),)]
+        return {'files': files, 'rows': rows, 'effect_ledger': operations}
 
     def barrier(self, p, marker):
         until = time.monotonic()+160
@@ -187,8 +190,36 @@ class Case:
 
     def stop(self, p, crash=False):
         if p.poll() is None:
-            p.send_signal(signal.SIGKILL if crash else signal.SIGTERM)
-            p.wait(timeout=15)
+            # Stop the exact unreaped child before capturing descendants. No
+            # PID-only helper kill and no new children racing the inventory.
+            p.send_signal(signal.SIGSTOP)
+            from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity
+            parent = capture_process_identity(p.pid, p.pid)
+            assert parent is not None, 'Unidentifiable own Server: stop unsafe'
+            listing = subprocess.check_output(['ps', '-axo', 'pid=,ppid='], text=True)
+            edges = [tuple(map(int, line.split())) for line in listing.splitlines() if line.strip()]
+            owned = {p.pid}
+            while True:
+                found = {pid for pid, ppid in edges if ppid in owned}
+                if found <= owned: break
+                owned.update(found)
+            descendants = [capture_process_identity(pid) for pid in owned-{p.pid}]
+            assert all(descendants), 'Unidentifiable own descendant: retain checkpoint'
+            for child in descendants:
+                if verify_process_identity(child) == 'MATCH': os.kill(child.pid, signal.SIGKILL)
+                else: assert verify_process_identity(child) == 'NOT_ACTIVE', 'Descendant identity changed'
+            assert verify_process_identity(parent) == 'MATCH'
+            p.send_signal(signal.SIGKILL if crash or descendants else signal.SIGTERM)
+            if not crash and not descendants: p.send_signal(signal.SIGCONT)
+            try: p.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                assert verify_process_identity(parent) == 'MATCH'
+                p.send_signal(signal.SIGKILL); p.wait(timeout=10)
+            for child in descendants:
+                until = time.monotonic()+5
+                while verify_process_identity(child) == 'MATCH' and time.monotonic() < until: time.sleep(.05)
+                assert verify_process_identity(child) == 'NOT_ACTIVE', 'Own descendant remains active'
+            self.record['processes'][self.children.index(p)]['descendants_stopped'] = [c.pid for c in descendants]
         self.record['processes'][self.children.index(p)].update(returncode=p.returncode, reaped=True)
 
     def run(self):
@@ -256,11 +287,21 @@ class Case:
         self.record['final_snapshot'] = final
 
     def finish(self):
-        for p in self.children: self.stop(p)
-        for log in self.logs: log.close()
-        with socket.socket() as s:
-            assert s.connect_ex(('127.0.0.1', self.port)) != 0, 'Own listener survived cleanup'
+        errors = []
+        for p in self.children:
+            try: self.stop(p)
+            except BaseException: errors.append(traceback.format_exc())
+        for log in self.logs:
+            try: log.close()
+            except BaseException: errors.append(traceback.format_exc())
+        try:
+            with socket.socket() as s:
+                assert s.connect_ex(('127.0.0.1', self.port)) != 0, 'Own listener survived cleanup'
+        except BaseException: errors.append(traceback.format_exc())
+        self.record['cleanup_errors'] = errors
+        if errors: self.record['state'] = 'FAILED'
         write_private(self.evidence/'receipt.json', self.record)
+        if errors: raise RuntimeError('Own cleanup incomplete; original failure and cleanup details retained')
 
 
 def main():
@@ -280,17 +321,22 @@ def main():
     results = []
     for index, name in enumerate(args.cases):
         case = None
+        primary = cleanup = None
         try:
             case = Case(args, name, index, schema)
             case.run(); case.record['state'] = 'PASS'
-        except BaseException:
+        except BaseException as error:
+            primary = error
             if case: case.record.update(state='FAILED', failure=traceback.format_exc())
-            raise
         finally:
             if case:
-                case.finish()
+                try: case.finish()
+                except BaseException as error: cleanup = error
                 results.append({'case': name, 'state': case.record.get('state')})
                 print(json.dumps(results[-1]), flush=True)
+        if primary and cleanup: raise BaseExceptionGroup('Primary qualification and cleanup failures', [primary, cleanup])
+        if primary: raise primary
+        if cleanup: raise cleanup
     write_private(args.output/'summary.json', {'source': args.source,
         'wheel_sha256': hashlib.sha256(args.wheel.read_bytes()).hexdigest(), 'results': results,
         'meaning': 'Actual unchanged noneditable installed package; explicitly instrumented fault boundaries; own synthetic targets only'})

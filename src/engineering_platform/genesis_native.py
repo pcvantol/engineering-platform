@@ -75,7 +75,10 @@ def command(*, native: Path, anchor: Path, target: Path, writable: bool,
             if ancestor != Path(ancestor.anchor):
                 ancestors.setdefault(ancestor, set()).add(leaf.relative_to(ancestor).parts[0])
     for ancestor, next_children in ancestors.items():
-        for runtime_root in {Path(sys.prefix).absolute(), Path(sys.prefix).resolve()}:
+        # Exact trusted readable leaves can share the target's ancestors.
+        # Retain their selected branch before denying its siblings; the
+        # explicit readable entry still bounds the leaf, not this parent.
+        for runtime_root in {Path(sys.prefix).absolute(), Path(sys.prefix).resolve(), *readable}:
             if runtime_root != ancestor and runtime_root.is_relative_to(ancestor):
                 next_children.add(runtime_root.relative_to(ancestor).parts[0])
         if ancestor == Path(ancestor.anchor):
