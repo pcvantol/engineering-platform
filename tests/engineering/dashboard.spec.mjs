@@ -566,6 +566,31 @@ async function captureIdleLocaleProjection(page, executionLabel) {
   }, executionLabel);
 }
 
+async function captureHostRuntimeProjection(page, {
+  runtimeVersion = "0.150.1",
+  runtimePath = "/Users/example/.local/share/engineering-platform/codex-cli/bin/codex",
+} = {}) {
+  return page.evaluate(({ runtimeVersion, runtimePath }) => {
+    r({ watcher_state: "WATCHER_IDLE" }, {
+      host_preflight: { outcome: "PASS", runtime_version: runtimeVersion, runtime_path: runtimePath },
+    });
+    return {
+      version: document.getElementById("executionHostRuntimeVersion").textContent,
+      path: document.getElementById("executionHostRuntimePath").textContent,
+      versionLabel: document.getElementById("technicalRuntimeVersionLabel").textContent,
+      pathLabel: document.getElementById("technicalRuntimePathLabel").textContent,
+      language: document.getElementById("dashboardLocale").value,
+    };
+  }, { runtimeVersion, runtimePath });
+}
+
+function assertHostRuntimeProjection(projection) {
+  expect(projection.version).toBe("0.150.1");
+  expect(projection.path).toBe("/Users/example/.local/share/engineering-platform/codex-cli/bin/codex");
+  expect(projection.versionLabel).toBe(DASHBOARD_MESSAGES[projection.language]["detail.codex_cli_version"]);
+  expect(projection.pathLabel).toBe(DASHBOARD_MESSAGES[projection.language]["detail.codex_cli_installation_path"]);
+}
+
 async function selectDashboardLocale(page, language, { waitForInitialProjection = true } = {}) {
   const nativeSelect = page.locator("#dashboardLocale");
   if (waitForInitialProjection) {
@@ -8549,25 +8574,57 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows the managed Codex CLI provenance in host preflight", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {
-      host_preflight: {
-        outcome: "PASS",
-        runtime_version: "0.150.1",
-        runtime_path: "/Users/example/.local/share/engineering-platform/codex-cli/bin/codex",
-      },
-    }));
+    await waitForDashboardReady(page);
+    // The fixture supplies synthetic provenance, not the host's stored state.
+    // Bind all four original predicates to that input's actual render turn.
+    assertHostRuntimeProjection(await captureHostRuntimeProjection(page));
+  });
 
-    await expect(page.locator("#executionHostRuntimeVersion")).toHaveText("0.150.1");
-    await expect(page.locator("#executionHostRuntimePath")).toHaveText(
-      "/Users/example/.local/share/engineering-platform/codex-cli/bin/codex",
-    );
-    const language = await page.locator("#dashboardLocale").inputValue();
-    await expect(page.locator("#technicalRuntimeVersionLabel")).toHaveText(
-      DASHBOARD_MESSAGES[language]["detail.codex_cli_version"],
-    );
-    await expect(page.locator("#technicalRuntimePathLabel")).toHaveText(
-      DASHBOARD_MESSAGES[language]["detail.codex_cli_installation_path"],
-    );
+  test("keeps synthetic host provenance predicates bound across a genuine background read", async ({ page }, testInfo) => {
+    const observer = await observeConsoleDocument(page);
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await openTitlebarOptions(page);
+    await page.locator("#autoRefresh").setChecked(false);
+    await expect.poll(() => observer.pendingSnapshotReads().length).toBe(0);
+    const documentId = await observer.documentId();
+    const priorRequests = new Set(observer.records().map(request => request.request_id));
+    const projection = await captureHostRuntimeProjection(page);
+    assertHostRuntimeProjection(projection);
+    const response = page.waitForResponse(packet =>
+      new URL(packet.url()).pathname === "/api/dashboard-snapshot" && packet.status() === 200);
+    await page.locator("#autoRefresh").setChecked(true);
+    const actualResponse = await response;
+    const raw = await actualResponse.body();
+    const packet = JSON.parse(raw);
+    expect(packet.project_id).toBe("dashboard-fixture");
+    expect(packet.scope).toBe("PROJECT");
+    const responseSha256 = createHash("sha256").update(raw).digest("hex");
+    let observed;
+    await expect.poll(() => {
+      observed = observer.records().find(request => !priorRequests.has(request.request_id)
+        && request.document_id === documentId && request.path === "/api/dashboard-snapshot"
+        && request.completed && request.status === 200 && request.response_sha256 === responseSha256);
+      return Boolean(observed);
+    }).toBe(true);
+    expect(await observer.documentId()).toBe(documentId);
+    await expect(page.locator("#executionHostRuntimePath")).not.toHaveText(projection.path);
+    const authoritativePath = await page.locator("#executionHostRuntimePath").textContent();
+    expect(() => expect(authoritativePath).toBe(projection.path)).toThrow();
+    assertHostRuntimeProjection(projection);
+    const wrongVersion = await captureHostRuntimeProjection(page, { runtimeVersion: "0.0.0" });
+    expect(() => assertHostRuntimeProjection(wrongVersion)).toThrow();
+    const wrongPath = await captureHostRuntimeProjection(page, { runtimePath: "/wrong/runtime" });
+    expect(() => assertHostRuntimeProjection(wrongPath)).toThrow();
+    const restored = await captureHostRuntimeProjection(page);
+    assertHostRuntimeProjection(restored);
+    const output = testInfo.outputPath("host-provenance-render-turn-cause.json");
+    writeFileSync(output, JSON.stringify({ projection,
+      document_id: documentId, request_id: observed.request_id,
+      response_path: "/api/dashboard-snapshot", response_status: actualResponse.status(),
+      response_sha256: responseSha256, response_project: packet.project_id, response_scope: packet.scope,
+      original_separate_path_predicate_rejected: true, wrongVersion, wrongPath, restored }));
+    await testInfo.attach("host-provenance-render-turn-cause", { path: output, contentType: "application/json" });
   });
 
   test("wraps a long Codex CLI installation path within host diagnostics", async ({ page }) => {

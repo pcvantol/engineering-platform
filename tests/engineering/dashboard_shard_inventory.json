@@ -1,7 +1,7 @@
 {
   "contract": "ep-dashboard-canonical-corpus/v1",
   "baseline_source_sha": "05e530d6339cb1c16b1e8f4814347578c5fd761c",
-  "mandatory_count": 529,
+  "mandatory_count": 530,
   "baseline_not_run_count": 4,
   "tests": [
     {
@@ -456,7 +456,7 @@
     },
     {
       "file": "dashboard_translation.integration.spec.mjs",
-      "title": "keeps a real historical modal open across delayed en→nl→de→en and all supported locales",
+      "title": "keeps a real historical modal open across delayed en\u2192nl\u2192de\u2192en and all supported locales",
       "expectedStatus": "passed",
       "annotations": []
     },
@@ -3215,6 +3215,12 @@
     {
       "file": "dashboard_run_evidence.integration.spec.mjs",
       "title": "actual installed five-locale log reads preserve healthy rows, source loss and restored projection",
+      "expectedStatus": "passed",
+      "annotations": []
+    },
+    {
+      "file": "dashboard.spec.mjs",
+      "title": "keeps synthetic host provenance predicates bound across a genuine background read",
       "expectedStatus": "passed",
       "annotations": []
     }

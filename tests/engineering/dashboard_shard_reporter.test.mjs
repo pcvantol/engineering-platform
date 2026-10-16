@@ -9,12 +9,12 @@ const corpus = JSON.parse(readFileSync(new URL('./dashboard_shard_inventory.json
 const tests = () => corpus.map(row => ({ ...row, location: { file: row.file }, annotations: row.annotations.map(a => ({ ...a })) }));
 const id = row => JSON.stringify([row.file, row.title]);
 
-test('all 533 contracts retain their exact ownership except three independent stored-case moves', () => {
+test('all 534 contracts retain their exact ownership with the added provenance regression and three stored-case moves', () => {
   const parts = partition(tests());
-  assert.equal(parts.flat().length, 533);
-  assert.equal(new Set(parts.flat().map(id)).size, 533);
+  assert.equal(parts.flat().length, 534);
+  assert.equal(new Set(parts.flat().map(id)).size, 534);
   assert.deepEqual(parts.flat().map(id).sort(), corpus.map(id).sort());
-  assert.deepEqual(parts.map(rows => rows.length), [133, 135, 134, 131]);
+  assert.deepEqual(parts.map(rows => rows.length), [133, 135, 135, 131]);
   const moved = new Map([
     [JSON.stringify(['dashboard_run_evidence.integration.spec.mjs',
       'reads actual normal en/dark/390 dispatcher evidence without execution effects']), { originalPart: 0, targetPart: 2 }],
@@ -41,7 +41,7 @@ test('all 533 contracts retain their exact ownership except three independent st
     restored[originalPart].push(row);
   }));
   assert.deepEqual(changes.sort(), [...moved.keys()].sort());
-  assert.deepEqual(restored.map(rows => rows.length), [135, 134, 132, 132]);
+  assert.deepEqual(restored.map(rows => rows.length), [135, 134, 133, 132]);
   for (const file of new Set(corpus.map(row => row.file))) {
     const counts = restored.map(rows => rows.filter(row => row.file === file).length);
     assert.ok(Math.max(...counts) - Math.min(...counts) <= 1);
@@ -87,7 +87,7 @@ test('changed expected outcomes and skip/fixme/fail annotations remain red', () 
 test('only the four unchanged baseline skip contracts remain separately NOT_RUN', () => {
   const all = tests(), baseline = all.filter(row => row.expectedStatus === 'skipped');
   assert.equal(baseline.length, 4);
-  assert.equal(all.filter(row => row.expectedStatus === 'passed').length, 529);
+  assert.equal(all.filter(row => row.expectedStatus === 'passed').length, 530);
   const stripped = tests(); stripped.find(row => row.expectedStatus === 'skipped').annotations = [];
   assert.throws(() => partition(stripped), /altered execution/);
   const changed = tests(); changed.find(row => row.expectedStatus === 'skipped').expectedStatus = 'passed';
@@ -120,13 +120,13 @@ test('supported reporter excludes only out-of-part cases and binds complete term
     reporter.preprocess({ config: { shard: { current: 2, total: 4 }, workers: 1 },
       suite: { allTests: () => all }, testRun: { skipSharding() {}, exclude(row) { excluded.push(row); } } });
     const selected = all.filter(row => !excluded.includes(row));
-    assert.equal(selected.length + excluded.length, 533);
+    assert.equal(selected.length + excluded.length, 534);
     reporter.onBegin({ projects: [{ outputDir: root }] }, { allTests: () => selected });
     selected.forEach(row => reporter.onTestEnd(row, { status: row.expectedStatus, retry: 0 }));
     assert.equal(reporter.onEnd({ status: 'passed' }), undefined);
     const receipt = JSON.parse(readFileSync(path.join(root, 'complete-shard.json')));
     assert.equal(receipt.qualified, true);
-    assert.equal(receipt.parts.flat().length, 533);
+    assert.equal(receipt.parts.flat().length, 534);
     reporter.onError(Error('outside case failure'));
     assert.deepEqual(reporter.onEnd({ status: 'passed' }), { status: 'failed' });
   } finally { rmSync(root, { recursive: true }); }
