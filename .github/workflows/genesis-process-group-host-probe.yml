@@ -1,0 +1,198 @@
+name: Genesis process-group host probe (diagnostic only)
+
+# One pinned diagnostic tag, before any product repair or full qualification.
+# All normal owning delivery/authorization checks remain separately required.
+on:
+  push:
+    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*', 'l2-genesis-git-inventory-*', 'l2-genesis-git-cold-*', 'l2-genesis-product-probe-*']
+
+permissions:
+  contents: read
+
+jobs:
+  linux-controller-probe:
+    name: Targeted installed controller coverage on Linux
+    if: startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.14'}
+      - name: Install exact committed candidate outside checkout
+        run: |
+          set -euo pipefail
+          python -m pip install coverage jsonschema==4.25.1
+          python tools/qualification/build_platform_wheel.py --source-root . --version 2.3.124 --wheel-directory "$RUNNER_TEMP/ep-controller-wheel" --install-python "$(command -v python)"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,zipfile,engineering_platform
+          wheel=Path(os.environ['RUNNER_TEMP'])/'ep-controller-wheel/engineering_platform-2.3.124-py3-none-any.whl'
+          package=Path(engineering_platform.__file__).resolve().parent
+          assert not package.is_relative_to(Path.cwd())
+          with zipfile.ZipFile(wheel) as z:
+              files=[n for n in z.namelist() if n.startswith('engineering_platform/') and not n.endswith('/')]
+              assert all((package.parent/n).read_bytes()==z.read(n) for n in files)
+          Path('controller-installed-binding.json').write_text(json.dumps({'source':os.environ['GITHUB_SHA'],'wheel_sha256':hashlib.sha256(wheel.read_bytes()).hexdigest(),'payload_files':len(files),'qualification':'TARGETED_COMPONENT_ONLY_NOT_FULL_DOD'},indent=2)+'\n')
+          PY
+      - name: Targeted actual installed controller and filesystem regressions
+        run: |
+          set -euo pipefail
+          coverage run --branch --source=engineering_platform.genesis_git_runtime,engineering_platform.genesis_service,engineering_platform.genesis_worker,engineering_platform.platform_version -m unittest \
+            tests.engineering.test_genesis_bootstrap tests.engineering.test_genesis_contract_and_cli \
+            tests.engineering.test_genesis_git_runtime tests.engineering.test_genesis_git_recovery tests.engineering.test_genesis_git_controller \
+            tests.engineering.test_platform_productization.PlatformProductizationTest.test_release_version_is_consistent_across_every_canonical_component \
+            tests.engineering.test_execution_host.LocalAgentRunnerTest.test_engineering_platform_accepts_newer_compatible_runner \
+            tests.engineering.test_execution_host.LocalAgentRunnerTest.test_default_runner_compatibility_accepts_the_repository_manifest \
+            tests.engineering.test_execution_host.LocalAgentRunnerTest.test_current_storage_schema_is_admitted_for_retry_children \
+            tests.engineering.test_execution_host.LocalAgentRunnerTest.test_engineering_platform_rejects_incompatible_platform_version \
+            tests.engineering.test_execution_host.LocalAgentRunnerTest.test_engineering_platform_rejects_bootstrap_checkpoint_memory_and_report_mismatches \
+            tests.engineering.test_execution_host.LocalAgentRunnerTest.test_engineering_platform_rejects_older_runner
+          coverage json -o controller-coverage.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('controller-coverage.json').read_text())
+          assert len(report['files'])==4
+          for name,value in report['files'].items():
+              summary=value['summary']
+              line=100*summary['covered_lines']/summary['num_statements']
+              print(name, 'line', line, 'combined', summary['percent_covered'])
+              assert line>80.2, name
+          # This targeted report does not replace the ordinary full-suite
+          # per-module combined branch/line 80.20% gate or any other CI check.
+          PY
+      - name: Preserve targeted original evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-linux-controller-facts-${{ github.sha }}
+          path: |
+            controller-installed-binding.json
+            controller-coverage.json
+            .coverage
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+  macos-group-probe:
+    name: Original installed Genesis group facts on macOS-14
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.14'}
+      - name: Original qualified wheel and separate noneditable installation
+        if: "!startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')"
+        env:
+          BASE_SOURCE: 4d0c0461d7a5ec7fb7a50aa42f775cc4be09faa5
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test ! -e /private/tmp/gpc1
+          test ! -e /private/tmp/npc1
+          git worktree add --detach "$RUNNER_TEMP/ep-original-source" "$BASE_SOURCE"
+          python tools/qualification/build_platform_wheel.py --source-root "$RUNNER_TEMP/ep-original-source" --version 2.3.123 --wheel-directory "$RUNNER_TEMP/ep-original-wheel"
+          python -m venv /private/tmp/gpc1
+          /private/tmp/gpc1/bin/python -m pip install --no-deps "$RUNNER_TEMP/ep-original-wheel/engineering_platform-2.3.123-py3-none-any.whl"
+          /private/tmp/gpc1/bin/python -m pip install jsonschema==4.25.1
+          npm install --prefix /private/tmp/npc1 --ignore-scripts --no-audit --no-fund @openai/codex@0.160.1
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          root=Path('/private/tmp/npc1')
+          found=[p for p in (root/'node_modules/@openai').rglob('codex') if '/vendor/' in str(p) and p.is_file() and os.access(p,os.X_OK)]
+          assert len(found)==1, 'one real pinned native executable required'
+          (root/'bin').mkdir()
+          (root/'bin/codex').symlink_to(found[0])
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          bundle=json.loads(Path('tests/engineering/fixtures/genesis_local/authority-bundle.json').read_text())
+          matches=[value['utf8'].encode() for name,value in bundle['files'].items() if name.endswith('/validate.py')]
+          assert len(matches)==1
+          assert hashlib.sha256(matches[0]).hexdigest()=='3ce4eca67c659d65ea2df70439d7f61bc8e4eb16b3d4b64b397d7fc3bdc16ae2'
+          path=Path(os.environ['RUNNER_TEMP'])/'original-validator.py'
+          path.write_bytes(matches[0]);path.chmod(0o600)
+          PY
+      - name: Current exact committed candidate and separate noneditable installation
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test ! -e /private/tmp/gpc1
+          test ! -e /private/tmp/npc1
+          python tools/qualification/build_platform_wheel.py --source-root . --version 2.3.124 --wheel-directory "$RUNNER_TEMP/ep-candidate-wheel"
+          python -m venv /private/tmp/gpc1
+          /private/tmp/gpc1/bin/python -m pip install --no-deps "$RUNNER_TEMP/ep-candidate-wheel/engineering_platform-2.3.124-py3-none-any.whl"
+          /private/tmp/gpc1/bin/python -m pip install jsonschema==4.25.1
+          npm install --prefix /private/tmp/npc1 --ignore-scripts --no-audit --no-fund @openai/codex@0.160.1
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          root=Path('/private/tmp/npc1')
+          found=[p for p in (root/'node_modules/@openai').rglob('codex') if '/vendor/' in str(p) and p.is_file() and os.access(p,os.X_OK)]
+          assert len(found)==1
+          (root/'bin').mkdir(); (root/'bin/codex').symlink_to(found[0])
+          bundle=json.loads(Path('tests/engineering/fixtures/genesis_local/authority-bundle.json').read_text())
+          matches=[value['utf8'].encode() for name,value in bundle['files'].items() if name.endswith('/validate.py')]
+          assert len(matches)==1
+          assert hashlib.sha256(matches[0]).hexdigest()=='3ce4eca67c659d65ea2df70439d7f61bc8e4eb16b3d4b64b397d7fc3bdc16ae2'
+          path=Path(os.environ['RUNNER_TEMP'])/'original-validator.py'
+          path.write_bytes(matches[0]);path.chmod(0o600)
+          PY
+      - name: Small exact-candidate installed chain with unchanged group detector
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')
+        run: |
+          set -euo pipefail
+          WHEEL="$RUNNER_TEMP/ep-candidate-wheel/engineering_platform-2.3.124-py3-none-any.whl"
+          SHA=$(shasum -a 256 "$WHEEL" | cut -d' ' -f1)
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_process_group_host_probe.py \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --bundle tests/engineering/fixtures/genesis_local/authority-bundle.json \
+            --validator "$RUNNER_TEMP/original-validator.py" \
+            --wheel "$WHEEL" --wheel-sha256 "$SHA" --source "$GITHUB_SHA" --root-prefix pgp \
+            --output "$RUNNER_TEMP/ep-group-probe" --case before-register \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Small original installed chain with unchanged group detector
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-group-probe-')
+        run: |
+          set -euo pipefail
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_process_group_host_probe.py \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --bundle tests/engineering/fixtures/genesis_local/authority-bundle.json \
+            --validator "$RUNNER_TEMP/original-validator.py" \
+            --wheel "$RUNNER_TEMP/ep-original-wheel/engineering_platform-2.3.123-py3-none-any.whl" \
+            --wheel-sha256 bc49e7a3b15c9021b16546a5ca96e5fbf280072d900d8d3dc173dee4b79d5b9e \
+            --source 4d0c0461d7a5ec7fb7a50aa42f775cc4be09faa5 --root-prefix pgc \
+            --output "$RUNNER_TEMP/ep-group-probe" --case before-register \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Read-only causal native Git shim and selected-runtime comparison
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-git-probe-') || startsWith(github.ref, 'refs/tags/l2-genesis-git-cold-')
+        run: |
+          set -euo pipefail
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_git_runtime_probe.py \
+            --order ${{ startsWith(github.ref, 'refs/tags/l2-genesis-git-cold-') && 'direct-first' || 'shim-first' }} \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --output "$RUNNER_TEMP/ep-group-probe" \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Read only selected Git ownership metadata without executing Git or native
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-git-inventory-')
+        run: |
+          set -euo pipefail
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_git_runtime_probe.py \
+            --selection-inventory-only \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --output "$RUNNER_TEMP/ep-group-probe" \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Preserve whitelisted observations and encrypted original private evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-macos-group-observations-${{ github.sha }}
+          path: ${{ runner.temp }}/ep-group-probe/public
+          if-no-files-found: error
+          retention-days: 30

@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-from . import genesis_authority as authority, genesis_native, project_topology, local_repository_binding
+from . import genesis_authority as authority, genesis_native, genesis_git_runtime, project_topology, local_repository_binding
 from .genesis_contract import BootstrapError, canonical, digest, identifier, request, load, MAX_BODY
 from .platform_admin import require_installation_owner
 from .preproject_inspection import directory, identity, selected_bytes
@@ -209,6 +209,8 @@ def admit(root: Path, *, token, headers: dict, value: dict, source_identity=None
         target_digest = digest(canonical({"root_identity": scope["root_identity"], "target_name": scope["target_name"].casefold()}))
         at = authority.now().isoformat()
         evidence = {"known": {}, "completed_steps": [], "attempts": [], "accepted_at": int(datetime.fromisoformat(at).timestamp())}
+        if sys.platform == 'darwin':
+            evidence['git_runtime_policy'] = genesis_git_runtime.POLICY
         first = {"operation_id": operation_id, "grant_id": grant_id, "request_digest": scope["request_digest"],
             "target_identity": target_digest, "project_id": original.project_id, "repository_id": original.repository_id,
             "state": "RESERVED", "evidence": evidence, "created_at": at, "updated_at": at}
@@ -287,6 +289,30 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
         _save(db, row, token)
     job = {"scope": scope, "known": row["evidence"]["known"], "step": step,
         "accepted_at": row["evidence"]["accepted_at"], "bundle": row["request"]["bundle"]}
+    if sys.platform == 'darwin':
+        if row['evidence'].get('git_runtime_policy', genesis_git_runtime.POLICY) != genesis_git_runtime.POLICY:
+            raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_PIN_INVALID', 409)
+        present, pending = _operation_git_pin(row)
+        if step == 'PREFLIGHT' and 'git_runtime' not in job['known']:
+            if ('PREFLIGHT' in row['evidence']['completed_steps']
+                    and not _legacy_git_pin_missing(row)):
+                raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_PIN_INVALID', 409)
+            job['git_runtime'] = (pending if present else
+                genesis_git_runtime.capture(operation_id=operation_id, host_id=scope['host_id']))
+        else:
+            job['git_runtime'] = job['known'].get('git_runtime')
+        genesis_git_runtime.verify(job['git_runtime'], operation_id=operation_id,
+            host_id=scope['host_id'], selection=True)
+        # Preserve a selected candidate even when this attempt fails before
+        # PREFLIGHT completes. Explicit resume may verify it, never repin it.
+        # Only successful native receipt/logs/whole-group closure admit known.
+        with authority.store(root, write=True, expected_source=source_identity) as db:
+            current_grant, current_scope = _context(db, token, headers, operation_id)
+            fresh = _row(db, operation_id, token); _require_original(fresh, current_grant, current_scope)
+            if current_scope != scope or fresh['evidence']['attempts'][-1]['attempt_id'] != attempt['attempt_id']:
+                raise BootstrapError('BOOTSTRAP_SCOPE_CHANGED', 403)
+            fresh['evidence']['attempts'][-1]['git_runtime'] = job['git_runtime']
+            _save(db, fresh, token)
     mutating = step not in {"PREFLIGHT", "VALIDATE_DOCS", "VERIFY_COMMIT"}
     target = Path(scope["workspace_root"]) / scope["target_name"]
     command = genesis_native.command(native=native, anchor=path / "a", target=target,
@@ -386,6 +412,16 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
             _require_group_stopped(process.pid)
             if exit_code or result.get("state") != "STEP_COMPLETED" or result.get("step") != step:
                 raise BootstrapError(result.get("error", "BOOTSTRAP_HOST_STEP_FAILED"), 409)
+            if sys.platform == 'darwin':
+                genesis_git_runtime.verify(job['git_runtime'], operation_id=operation_id,
+                    host_id=scope['host_id'], selection=True)
+                if step == 'PREFLIGHT':
+                    ready = result.get('result', {})
+                    version = ready.get('git_version_sha256')
+                    if (canonical(ready.get('git_runtime')) != canonical(job['git_runtime'])
+                            or not isinstance(version, str) or len(version) != 64
+                            or any(character not in '0123456789abcdef' for character in version)):
+                        raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_RECEIPT_INVALID', 409)
     finally:
         primary = sys.exc_info()[1]
         cleanup_errors = []
@@ -454,7 +490,10 @@ def _execute_step(root: Path, *, operation_id: str, step: str, token, headers: d
     with authority.store(root, write=True, expected_source=source_identity) as db:
         fresh = _row(db, operation_id, token)
         fresh["evidence"]["known"].update(result["result"])
-        fresh["evidence"]["completed_steps"].append(step)
+        if step not in fresh['evidence']['completed_steps']:
+            fresh["evidence"]["completed_steps"].append(step)
+        if sys.platform == 'darwin' and step == 'PREFLIGHT':
+            fresh['evidence']['git_runtime_policy'] = genesis_git_runtime.POLICY
         fresh["evidence"]["attempts"][-1].update(state="STEP_COMPLETED", exit_code=exit_code)
         _save(db, fresh, token)
     return result["result"]
@@ -521,6 +560,28 @@ def maintenance_activity(root: Path) -> bool:
         return True
 
 
+def _legacy_git_pin_missing(row: dict) -> bool:
+    evidence = row['evidence']
+    known = evidence['known']
+    # These fields are protected by the original operation MAC. New-format
+    # admissions always carry the policy; never repair a broken new pin by
+    # treating a stale native-profile boolean alone as fresh readiness.
+    return (sys.platform == 'darwin' and 'git_runtime_policy' not in evidence
+        and 'git_runtime' not in known and known.get('native_profile_started') is True
+        and type(known.get('business_effects')) is int and known['business_effects'] == 0)
+
+
+def _operation_git_pin(row: dict):
+    evidence = row['evidence']
+    pins = ([evidence['known']['git_runtime']] if 'git_runtime' in evidence['known'] else [])
+    pins += [attempt['git_runtime'] for attempt in evidence['attempts'] if 'git_runtime' in attempt]
+    if not pins:
+        return False, None
+    if any(canonical(pin) != canonical(pins[0]) for pin in pins):
+        raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_PIN_INVALID', 409)
+    return True, pins[0]
+
+
 def execute(root: Path, *, operation_id: str, token, headers: dict, source_identity=None) -> None:
     with _lock(root, operation_id) as lock_fd:
         with authority.store(root, expected_source=source_identity) as db:
@@ -529,11 +590,14 @@ def execute(root: Path, *, operation_id: str, token, headers: dict, source_ident
             _active_previous(row)
         if row["state"] == "COMPLETE":
             return
+        if sys.platform != 'darwin' and ('git_runtime_policy' in row['evidence'] or _operation_git_pin(row)[0]):
+            raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_MODE_UNSUPPORTED', 422)
         try:
             for step in STEPS:
                 with authority.store(root, expected_source=source_identity) as db:
                     row = _row(db, operation_id, token)
-                if step in row["evidence"]["completed_steps"]:
+                legacy_runtime_missing = step == 'PREFLIGHT' and _legacy_git_pin_missing(row)
+                if step in row["evidence"]["completed_steps"] and not legacy_runtime_missing:
                     continue
                 _execute_step(root, operation_id=operation_id, step=step, token=token, headers=headers,
                     source_identity=source_identity, lock_fd=lock_fd)

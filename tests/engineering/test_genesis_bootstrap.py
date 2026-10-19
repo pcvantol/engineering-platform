@@ -45,7 +45,12 @@ class GenesisOwnerFixture(unittest.TestCase):
         from engineering_platform import genesis_worker as worker
         from engineering_platform.preproject_inspection import directory
         with directory(Path(scope["staging_path"]).parent) as fd:
-            return worker.create(scope, prepared_parent_fd=fd)
+            known = worker.create(scope, prepared_parent_fd=fd)
+        if sys.platform == 'darwin':
+            from engineering_platform import genesis_git_runtime
+            known['git_runtime'] = genesis_git_runtime.capture(
+                operation_id=scope['operation_id'], host_id=scope['host_id'])
+        return known
 
     def _git_initialize(self, scope, known, files):
         from engineering_platform import genesis_worker as worker
@@ -248,7 +253,7 @@ class GenesisOwnerFixture(unittest.TestCase):
     def test_committed_genesis_has_clean_index_and_worktree(self):
         from engineering_platform import genesis_worker as worker
         scope, known = self._admitted_committed()
-        self.assertEqual(worker._git(self.workspace / scope["target_name"], "status", "--porcelain=v1", known=known), b"")
+        self.assertEqual(worker._git(self.workspace / scope["target_name"], "status", "--porcelain=v1", known=known, scope=scope), b"")
 
     def test_foreign_git_metadata_is_not_adopted_at_creation(self):
         from engineering_platform import genesis_worker as worker
