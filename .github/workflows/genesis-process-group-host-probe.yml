@@ -4,7 +4,7 @@ name: Genesis process-group host probe (diagnostic only)
 # All normal owning delivery/authorization checks remain separately required.
 on:
   push:
-    tags: ['l2-genesis-group-probe-*']
+    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*']
 
 permissions:
   contents: read
@@ -53,6 +53,7 @@ jobs:
           path.write_bytes(matches[0]);path.chmod(0o600)
           PY
       - name: Small original installed chain with unchanged group detector
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-group-probe-')
         run: |
           set -euo pipefail
           /private/tmp/gpc1/bin/python -I tools/qualification/genesis_process_group_host_probe.py \
@@ -63,6 +64,14 @@ jobs:
             --wheel-sha256 bc49e7a3b15c9021b16546a5ca96e5fbf280072d900d8d3dc173dee4b79d5b9e \
             --source 4d0c0461d7a5ec7fb7a50aa42f775cc4be09faa5 --root-prefix pgc \
             --output "$RUNNER_TEMP/ep-group-probe" --case before-register \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Read-only causal native Git shim and selected-runtime comparison
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-git-probe-')
+        run: |
+          set -euo pipefail
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_git_runtime_probe.py \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --output "$RUNNER_TEMP/ep-group-probe" \
             --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
       - name: Preserve whitelisted observations and encrypted original private evidence
         if: always()
