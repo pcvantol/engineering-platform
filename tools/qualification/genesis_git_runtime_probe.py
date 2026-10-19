@@ -183,6 +183,7 @@ def one(args, root: Path, label: str, executable: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--selection-inventory-only', action='store_true')
     for name in ('python', 'native', 'output', 'recipient'):
         parser.add_argument('--'+name, type=Path, required=True)
     args = parser.parse_args()
@@ -193,16 +194,30 @@ def main() -> int:
     args.output.mkdir(mode=0o700)
     (args.output/'private').mkdir(mode=0o700)
     (args.output/'public').mkdir(mode=0o700)
-    root = Path('/private/tmp/pgd1')
-    root.mkdir(mode=0o700)
-    (root/'a').mkdir(mode=0o700)
-    (root/'r').mkdir(mode=0o700)
-    append_private(args.output/'private'/'root-identity.jsonl', {'device':root.stat().st_dev,'inode':root.stat().st_ino})
     controls = []
     lookup_error = None
     try:
-        controls.append(one(args, root, 'system-shim', 'git'))
-        if controls[0].get('control_integrity') == 'PASS':
+        if args.selection_inventory_only:
+            # Filesystem observations only. Do not start native/Git/selector
+            # processes, change permissions or bypass any execution guard.
+            selection = Path('/var/db/xcode_select_link')
+            selected = (selection/'usr/bin/git').resolve(strict=True)
+            for node in (selection, selected, *selected.parents):
+                info = node.lstat()
+                append_private(args.output/'private'/'selection-inventory.jsonl',
+                    {'path':str(node), 'device':info.st_dev,'inode':info.st_ino,
+                     'uid':info.st_uid,'gid':info.st_gid,'mode':stat.S_IMODE(info.st_mode),
+                     'symlink':str(node.readlink()) if node.is_symlink() else None,
+                     'current_uid':os.getuid(),
+                     'sha256':hashlib.sha256(node.read_bytes()).hexdigest() if node == selected else None})
+        else:
+            root = Path('/private/tmp/pgd1')
+            root.mkdir(mode=0o700)
+            (root/'a').mkdir(mode=0o700)
+            (root/'r').mkdir(mode=0o700)
+            append_private(args.output/'private'/'root-identity.jsonl', {'device':root.stat().st_dev,'inode':root.stat().st_ino})
+            controls.append(one(args, root, 'system-shim', 'git'))
+        if controls and controls[0].get('control_integrity') == 'PASS':
             # Read the existing root-owned OS choice without starting xcrun,
             # xcodebuild or any other selector/cache-warming helper process.
             selection=Path('/var/db/xcode_select_link')
@@ -249,7 +264,8 @@ def main() -> int:
         and controls[2].get('original_group_check')=='ABSENT_ESRCH' and controls[2].get('native_returncode')==0
         and controls[2].get('worker',{}).get('returncode')==0
         and all(row.get('control_integrity')=='PASS' for row in controls))
-    summary = {'result':'SHIM_FAILURE_PERSISTS_SELECTED_DIRECT_SUCCEEDS' if diagnosis else 'NO_CLOSING_DIAGNOSIS',
+    summary = {'result':('METADATA_ONLY_NO_EXECUTION' if args.selection_inventory_only and not lookup_error else
+        'SHIM_FAILURE_PERSISTS_SELECTED_DIRECT_SUCCEEDS' if diagnosis else 'NO_CLOSING_DIAGNOSIS'),
         'controls':public_controls,'driver_error_type':lookup_error,
         'meaning':'Read-only native toolchain diagnosis; no productrepair/Genesis qualification PASS'}
     archive = args.output/'private'/'original.tar.gz'
@@ -262,7 +278,7 @@ def main() -> int:
     summary['encrypted_archive_sha256'] = hashlib.sha256(encrypted.read_bytes()).hexdigest()
     (args.output/'public'/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print(json.dumps({'result':summary['result'],'controls':len(controls)}))
-    return 0 if diagnosis else 1
+    return 0 if diagnosis or args.selection_inventory_only and not lookup_error else 1
 
 
 if __name__ == '__main__': raise SystemExit(main())

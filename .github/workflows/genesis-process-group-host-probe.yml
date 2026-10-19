@@ -4,7 +4,7 @@ name: Genesis process-group host probe (diagnostic only)
 # All normal owning delivery/authorization checks remain separately required.
 on:
   push:
-    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*']
+    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*', 'l2-genesis-git-inventory-*']
 
 permissions:
   contents: read
@@ -70,6 +70,15 @@ jobs:
         run: |
           set -euo pipefail
           /private/tmp/gpc1/bin/python -I tools/qualification/genesis_git_runtime_probe.py \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --output "$RUNNER_TEMP/ep-group-probe" \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Read only selected Git ownership metadata without executing Git or native
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-git-inventory-')
+        run: |
+          set -euo pipefail
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_git_runtime_probe.py \
+            --selection-inventory-only \
             --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
             --output "$RUNNER_TEMP/ep-group-probe" \
             --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
