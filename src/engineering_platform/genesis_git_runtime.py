@@ -20,6 +20,7 @@ from .preproject_inspection import directory, selected_bytes, InspectionError
 SELECTION = Path('/var/db/xcode_select_link')
 ROOTS = (Path('/Applications'), Path('/Library/Developer'))
 POLICY = 'MACOS_OS_SELECTED_PHYSICAL_GIT_V1'
+ROOT_WRITE_GROUPS = frozenset({0, 80})  # Darwin wheel/admin, not ordinary staff.
 FIELDS = {'format', 'mode', 'operation_id', 'host_id', 'selection', 'executable', 'ancestors'}
 
 
@@ -33,7 +34,9 @@ def _ancestors(path):
     for parent in path.parents:
         info = parent.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in {0, os.geteuid()}
-                or info.st_mode & (0o002 if info.st_uid == 0 else 0o022)):
+                or info.st_mode & 0o002
+                or (info.st_mode & 0o020 and
+                    (info.st_uid != 0 or info.st_gid not in ROOT_WRITE_GROUPS))):
             raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_UNTRUSTED', 422)
         rows.append({'path': str(parent), **{key: getattr(info, 'st_'+key)
             for key in ('dev', 'ino', 'uid', 'gid', 'mode')}})

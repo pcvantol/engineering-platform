@@ -12,7 +12,10 @@ existing root-owned `/var/db/xcode_select_link`. It accepts an executable under
 `/Applications` or `/Library/Developer` only. Binary and ancestor ownership,
 permissions, no-follow regular-file identity and bounded SHA256 reads are
 checked. Root and the current trusted installation owner are supported;
-non-root ancestors must not be group/world writable. No consumer supplies an
+non-root ancestors must not be group/world writable. Root-owned group-write
+is accepted only for Darwin wheel/admin (GID0/80); other groups such as staff
+do not acquire host execution authority. World-write always refuses.
+No consumer supplies an
 executable path, and there is no PATH or shim fallback for this macOS mode.
 
 The trusted installation-owner/system-administrator boundary is explicit.

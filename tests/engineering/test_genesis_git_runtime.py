@@ -122,6 +122,26 @@ class GitRuntimeFileControls(unittest.TestCase):
 
 
 class AncestorTrustControls(unittest.TestCase):
+    def test_root_group_write_requires_explicit_privileged_darwin_group(self):
+        for group in (20, 99, 501):
+            info = SimpleNamespace(st_uid=0, st_gid=group, st_mode=stat.S_IFDIR|0o775, st_dev=1, st_ino=3)
+            with self.subTest(group=group), patch.object(Path, 'lstat', return_value=info):
+                with self.assertRaisesRegex(BootstrapError, 'UNTRUSTED'):
+                    runtime._ancestors(Path('/Applications/fixture/git'))
+        for group in (0, 80):
+            info = SimpleNamespace(st_uid=0, st_gid=group, st_mode=stat.S_IFDIR|0o775, st_dev=1, st_ino=3)
+            with self.subTest(group=group), patch.object(Path, 'lstat', return_value=info):
+                self.assertTrue(runtime._ancestors(Path('/Applications/fixture/git')))
+        # A root-owned read-only ancestor need not delegate writes to its group.
+        info = SimpleNamespace(st_uid=0, st_gid=20, st_mode=stat.S_IFDIR|0o755, st_dev=1, st_ino=3)
+        with patch.object(Path, 'lstat', return_value=info):
+            self.assertTrue(runtime._ancestors(Path('/Applications/fixture/git')))
+        # Even admin-group write is not allowed on a non-root-owned ancestor.
+        info = SimpleNamespace(st_uid=501, st_gid=80, st_mode=stat.S_IFDIR|0o775, st_dev=1, st_ino=3)
+        with patch.object(runtime.os, 'geteuid', return_value=501), patch.object(Path, 'lstat', return_value=info):
+            with self.assertRaisesRegex(BootstrapError, 'UNTRUSTED'):
+                runtime._ancestors(Path('/Applications/fixture/git'))
+
     def test_foreign_owner_other_writes_and_nondirectory_are_rejected(self):
         actual = runtime._ancestors
         for owner, mode in ((os.geteuid()+100000, 0o40755), (os.geteuid(), 0o40777),
