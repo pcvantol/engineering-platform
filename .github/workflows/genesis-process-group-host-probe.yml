@@ -4,7 +4,7 @@ name: Genesis process-group host probe (diagnostic only)
 # All normal owning delivery/authorization checks remain separately required.
 on:
   push:
-    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*', 'l2-genesis-git-inventory-*']
+    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*', 'l2-genesis-git-inventory-*', 'l2-genesis-git-cold-*']
 
 permissions:
   contents: read
@@ -66,10 +66,11 @@ jobs:
             --output "$RUNNER_TEMP/ep-group-probe" --case before-register \
             --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
       - name: Read-only causal native Git shim and selected-runtime comparison
-        if: startsWith(github.ref, 'refs/tags/l2-genesis-git-probe-')
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-git-probe-') || startsWith(github.ref, 'refs/tags/l2-genesis-git-cold-')
         run: |
           set -euo pipefail
           /private/tmp/gpc1/bin/python -I tools/qualification/genesis_git_runtime_probe.py \
+            --order ${{ startsWith(github.ref, 'refs/tags/l2-genesis-git-cold-') && 'direct-first' || 'shim-first' }} \
             --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
             --output "$RUNNER_TEMP/ep-group-probe" \
             --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem

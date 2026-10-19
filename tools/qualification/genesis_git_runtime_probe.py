@@ -181,9 +181,39 @@ def one(args, root: Path, label: str, executable: str) -> dict:
     return record
 
 
+def selected_git(args):
+    # Read the existing root-owned OS choice without starting xcrun,
+    # xcodebuild or any other selector/cache-warming helper process.
+    selection=Path('/var/db/xcode_select_link')
+    selection_info=selection.lstat()
+    if selection_info.st_uid != 0 or not stat.S_ISLNK(selection_info.st_mode):
+        raise RuntimeError('Supported root-owned OS toolchain selection required')
+    selection_text=str(selection.readlink())
+    selected = (selection/'usr/bin/git').resolve(strict=True)
+    if not any(selected.is_relative_to(prefix) for prefix in (Path('/Applications'), Path('/Library/Developer'))):
+        raise RuntimeError('Unexpected selected toolchain placement')
+    trusted_owners = {0, os.getuid()}
+    for node in selected.parents:
+        info = node.stat()
+        if (info.st_uid not in trusted_owners or
+                info.st_mode & (0o002 if info.st_uid == 0 else 0o022)):
+            raise RuntimeError('Untrusted selected toolchain parent')
+    info = selected.stat()
+    if (info.st_uid not in trusted_owners or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode)
+            or not os.access(selected, os.X_OK) or selected.name != 'git'):
+        raise RuntimeError('Actual root-or-current-owner non-shim Git required')
+    selected_digest=hashlib.sha256(selected.read_bytes()).hexdigest()
+    selected_identity=tuple(getattr(info,key) for key in ('st_dev','st_ino','st_uid','st_gid','st_mode','st_size','st_mtime_ns','st_ctime_ns'))
+    append_private(args.output/'private'/'selected-git.jsonl', {'path':str(selected),'device':info.st_dev,'inode':info.st_ino,
+        'sha256':selected_digest, 'mode':stat.S_IMODE(info.st_mode),
+        'selection_device':selection_info.st_dev,'selection_inode':selection_info.st_ino,'selection_text':selection_text})
+    return selected, selection, selection_info, selection_text, selected_identity, selected_digest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--selection-inventory-only', action='store_true')
+    parser.add_argument('--order', choices=('shim-first','direct-first'), default='shim-first')
     for name in ('python', 'native', 'output', 'recipient'):
         parser.add_argument('--'+name, type=Path, required=True)
     args = parser.parse_args()
@@ -216,34 +246,15 @@ def main() -> int:
             (root/'a').mkdir(mode=0o700)
             (root/'r').mkdir(mode=0o700)
             append_private(args.output/'private'/'root-identity.jsonl', {'device':root.stat().st_dev,'inode':root.stat().st_ino})
-            controls.append(one(args, root, 'system-shim', 'git'))
+            if args.order == 'direct-first':
+                selected, selection, selection_info, selection_text, selected_identity, selected_digest = selected_git(args)
+                controls.append(one(args, root, 'selected-direct-cold', str(selected)))
+            else:
+                controls.append(one(args, root, 'system-shim', 'git'))
         if controls and controls[0].get('control_integrity') == 'PASS':
-            # Read the existing root-owned OS choice without starting xcrun,
-            # xcodebuild or any other selector/cache-warming helper process.
-            selection=Path('/var/db/xcode_select_link')
-            selection_info=selection.lstat()
-            if selection_info.st_uid != 0 or not stat.S_ISLNK(selection_info.st_mode):
-                raise RuntimeError('Supported root-owned OS toolchain selection required')
-            selection_text=str(selection.readlink())
-            selected = (selection/'usr/bin/git').resolve(strict=True)
-            if not any(selected.is_relative_to(prefix) for prefix in (Path('/Applications'), Path('/Library/Developer'))):
-                raise RuntimeError('Unexpected selected toolchain placement')
-            trusted_owners = {0, os.getuid()}
-            for node in selected.parents:
-                info = node.stat()
-                if (info.st_uid not in trusted_owners or
-                        info.st_mode & (0o002 if info.st_uid == 0 else 0o022)):
-                    raise RuntimeError('Untrusted selected toolchain parent')
-            info = selected.stat()
-            if (info.st_uid not in trusted_owners or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode)
-                    or not os.access(selected, os.X_OK) or selected.name != 'git'):
-                raise RuntimeError('Actual root-or-current-owner non-shim Git required')
-            selected_digest=hashlib.sha256(selected.read_bytes()).hexdigest()
-            selected_identity=tuple(getattr(info,key) for key in ('st_dev','st_ino','st_uid','st_gid','st_mode','st_size','st_mtime_ns','st_ctime_ns'))
-            append_private(args.output/'private'/'selected-git.jsonl', {'path':str(selected),'device':info.st_dev,'inode':info.st_ino,
-                'sha256':selected_digest, 'mode':stat.S_IMODE(info.st_mode),
-                'selection_device':selection_info.st_dev,'selection_inode':selection_info.st_ino,'selection_text':selection_text})
-            controls.append(one(args, root, 'system-shim-after-selection-read', 'git'))
+            if args.order == 'shim-first':
+                selected, selection, selection_info, selection_text, selected_identity, selected_digest = selected_git(args)
+            controls.append(one(args, root, 'system-shim-after-direct' if args.order == 'direct-first' else 'system-shim-after-selection-read', 'git'))
             if controls[1].get('control_integrity') == 'PASS':
                 controls.append(one(args, root, 'selected-direct', str(selected)))
             fresh=selection.lstat()
@@ -262,13 +273,21 @@ def main() -> int:
             'finally_absent','probe_error_type','direct_child_stop_uncertain','control_integrity') if key in row})
         public_controls[-1]['git_returncode'] = row.get('worker',{}).get('returncode')
         public_controls[-1]['git_error_type'] = row.get('worker',{}).get('error_type')
-    diagnosis = (len(controls)==3 and not lookup_error
+    diagnosis = (args.order == 'shim-first' and len(controls)==3 and not lookup_error
         and all(row.get('original_group_check')=='BOOTSTRAP_HOST_GROUP_ACTIVE_OR_UNCERTAIN' for row in controls[:2])
         and controls[2].get('original_group_check')=='ABSENT_ESRCH' and controls[2].get('native_returncode')==0
         and controls[2].get('worker',{}).get('returncode')==0
         and all(row.get('control_integrity')=='PASS' for row in controls))
+    reverse_diagnosis = (args.order == 'direct-first' and len(controls)==3 and not lookup_error
+        and all(row.get('original_group_check')=='ABSENT_ESRCH' and row.get('native_returncode')==0
+            and row.get('worker',{}).get('returncode')==0 for row in (controls[0],controls[2]))
+        and controls[1].get('original_group_check')=='BOOTSTRAP_HOST_GROUP_ACTIVE_OR_UNCERTAIN'
+        and controls[1].get('worker',{}).get('error_type')=='TimeoutExpired'
+        and all(row.get('control_integrity')=='PASS' for row in controls))
     summary = {'result':('METADATA_ONLY_NO_EXECUTION' if args.selection_inventory_only and not lookup_error else
+        'DIRECT_COLD_SUCCESS_SHIM_GROUP_FAILURE' if reverse_diagnosis else
         'SHIM_FAILURE_PERSISTS_SELECTED_DIRECT_SUCCEEDS' if diagnosis else 'NO_CLOSING_DIAGNOSIS'),
+        'order':args.order,
         'controls':public_controls,'driver_error_type':lookup_error,
         'meaning':'Read-only native toolchain diagnosis; no productrepair/Genesis qualification PASS'}
     archive = args.output/'private'/'original.tar.gz'
@@ -281,7 +300,7 @@ def main() -> int:
     summary['encrypted_archive_sha256'] = hashlib.sha256(encrypted.read_bytes()).hexdigest()
     (args.output/'public'/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print(json.dumps({'result':summary['result'],'controls':len(controls)}))
-    return 0 if diagnosis or args.selection_inventory_only and not lookup_error else 1
+    return 0 if diagnosis or reverse_diagnosis or args.selection_inventory_only and not lookup_error else 1
 
 
 if __name__ == '__main__': raise SystemExit(main())
