@@ -1,0 +1,74 @@
+name: Genesis process-group host probe (diagnostic only)
+
+# One pinned diagnostic tag, before any product repair or full qualification.
+# All normal owning delivery/authorization checks remain separately required.
+on:
+  push:
+    tags: ['l2-genesis-group-probe-*']
+
+permissions:
+  contents: read
+
+jobs:
+  macos-group-probe:
+    name: Original installed Genesis group facts on macOS-14
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.14'}
+      - name: Original qualified wheel and separate noneditable installation
+        env:
+          BASE_SOURCE: 4d0c0461d7a5ec7fb7a50aa42f775cc4be09faa5
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test ! -e /private/tmp/gpc1
+          test ! -e /private/tmp/npc1
+          git worktree add --detach "$RUNNER_TEMP/ep-original-source" "$BASE_SOURCE"
+          python tools/qualification/build_platform_wheel.py --source-root "$RUNNER_TEMP/ep-original-source" --version 2.3.123 --wheel-directory "$RUNNER_TEMP/ep-original-wheel"
+          python -m venv /private/tmp/gpc1
+          /private/tmp/gpc1/bin/python -m pip install --no-deps "$RUNNER_TEMP/ep-original-wheel/engineering_platform-2.3.123-py3-none-any.whl"
+          /private/tmp/gpc1/bin/python -m pip install jsonschema==4.25.1
+          npm install --prefix /private/tmp/npc1 --ignore-scripts --no-audit --no-fund @openai/codex@0.160.1
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          root=Path('/private/tmp/npc1')
+          found=[p for p in (root/'node_modules/@openai').rglob('codex') if '/vendor/' in str(p) and p.is_file() and os.access(p,os.X_OK)]
+          assert len(found)==1, 'one real pinned native executable required'
+          (root/'bin').mkdir()
+          (root/'bin/codex').symlink_to(found[0])
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          bundle=json.loads(Path('tests/engineering/fixtures/genesis_local/authority-bundle.json').read_text())
+          matches=[value['utf8'].encode() for name,value in bundle['files'].items() if name.endswith('/validate.py')]
+          assert len(matches)==1
+          assert hashlib.sha256(matches[0]).hexdigest()=='3ce4eca67c659d65ea2df70439d7f61bc8e4eb16b3d4b64b397d7fc3bdc16ae2'
+          path=Path(os.environ['RUNNER_TEMP'])/'original-validator.py'
+          path.write_bytes(matches[0]);path.chmod(0o600)
+          PY
+      - name: Small original installed chain with unchanged group detector
+        run: |
+          set -euo pipefail
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_process_group_host_probe.py \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --bundle tests/engineering/fixtures/genesis_local/authority-bundle.json \
+            --validator "$RUNNER_TEMP/original-validator.py" \
+            --wheel "$RUNNER_TEMP/ep-original-wheel/engineering_platform-2.3.123-py3-none-any.whl" \
+            --wheel-sha256 bc49e7a3b15c9021b16546a5ca96e5fbf280072d900d8d3dc173dee4b79d5b9e \
+            --source 4d0c0461d7a5ec7fb7a50aa42f775cc4be09faa5 --root-prefix pgc \
+            --output "$RUNNER_TEMP/ep-group-probe" --case before-register \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
+      - name: Preserve whitelisted observations and encrypted original private evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-macos-group-observations-${{ github.sha }}
+          path: ${{ runner.temp }}/ep-group-probe/public
+          if-no-files-found: error
+          retention-days: 30
