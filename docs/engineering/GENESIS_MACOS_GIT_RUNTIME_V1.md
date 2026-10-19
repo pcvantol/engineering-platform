@@ -28,8 +28,10 @@ controller step checks the selection; every Git command checks its binary.
 The worker does not read the selector through a new sandbox grant. Original
 five-second Git and thirty-second step deadlines, sanitized environment,
 finite filesystem capabilities, permit handshake and whole-group detector
-remain in force. Linux retains its existing Git behavior and rejects a
-macOS-mode pin rather than treating it as authority for a fallback command.
+remain in force. Linux retains its existing Git executable selection and rejects
+a macOS-mode pin rather than treating it as authority for a fallback command.
+The shared finite-log and original-empty-metadata recovery checks apply on both
+supported platforms.
 
 ## Original-operation recovery
 
