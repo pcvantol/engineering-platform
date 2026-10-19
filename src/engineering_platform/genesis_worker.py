@@ -24,6 +24,7 @@ from .genesis_contract import BootstrapError, bundle, canonical, digest, load, M
 from .preproject_inspection import directory, identity, selected_bytes, inventory, read_relative
 from .repository_attachment import parse_repository_attachment
 from .effect_workspace import child_environment
+from . import genesis_git_runtime
 
 
 @contextmanager
@@ -234,8 +235,86 @@ exec(compile(b,p,'exec'),{'__name__':'__main__','__file__':p})
         "in_repository_command_after_git": "NOT_QUALIFIED_OR_CLAIMED"}
 
 
-def _git(root: Path, *args: str, known: dict, input_bytes: bytes | None = None) -> bytes:
-    command = ("git", "--git-dir=.", "--work-tree="+str(root), "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+def _git_executable(scope: dict, known: dict) -> str:
+    if sys.platform != 'darwin':
+        if 'git_runtime' in known:
+            raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_MODE_UNSUPPORTED', 422)
+        return 'git'
+    return genesis_git_runtime.verify(known.get('git_runtime'),
+        operation_id=scope['operation_id'], host_id=scope['host_id'])
+
+
+def _private_git_output(stdout: bytes, stderr: bytes) -> None:
+    # These are original received bytes, confined to the parent's private
+    # bounded stderr evidence. Never put them in the JSON receipt protocol.
+    failures = []
+    for label, raw, maximum in ((b'STDOUT', stdout, 262144), (b'STDERR', stderr, 65536)):
+        if len(raw) > maximum:
+            failure = BootstrapError('BOOTSTRAP_GIT_OUTPUT_LIMIT' if label == b'STDOUT'
+                else 'BOOTSTRAP_GIT_ERROR_OUTPUT_LIMIT', 409)
+            failure.add_note(f'Original {label.decode()} bytes={len(raw)}, retained={maximum}')
+            failures.append(failure)
+        if raw:
+            try:
+                sys.stderr.buffer.write(b'\nGENESIS_GIT_'+label+b'\n'+raw[:maximum])
+            except (OSError, ValueError) as error:
+                failures.append(error)
+    if failures:
+        raise ExceptionGroup('Original private Git output could not be preserved', failures)
+
+
+def _run_git(command, metadata: int, input_bytes: bytes | None = None):
+    try:
+        result = subprocess.run(command, preexec_fn=lambda: os.fchdir(metadata), pass_fds=(metadata,),
+            env=child_environment(), input=input_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=5, check=False)
+    except subprocess.TimeoutExpired as error:
+        try:
+            _private_git_output(error.stdout or b'', error.stderr or b'')
+        except ExceptionGroup as evidence_error:
+            raise error from evidence_error
+        raise
+    primary = None
+    if result.returncode:
+        primary = BootstrapError('BOOTSTRAP_LOCAL_GIT_FAILED', 409)
+    elif len(result.stdout) > 262144:
+        primary = BootstrapError('BOOTSTRAP_GIT_OUTPUT_LIMIT', 409)
+    elif len(result.stderr) > 65536:
+        primary = BootstrapError('BOOTSTRAP_GIT_ERROR_OUTPUT_LIMIT', 409)
+    original_status = f'Original Git exit={result.returncode}, stdout_bytes={len(result.stdout)}, stderr_bytes={len(result.stderr)}'
+    if primary is not None:
+        primary.add_note(original_status)
+    try:
+        _private_git_output(result.stdout, result.stderr)
+    except ExceptionGroup as evidence_error:
+        if primary is not None:
+            raise primary from evidence_error
+        evidence_error.add_note(original_status)
+        raise
+    if primary is not None:
+        raise primary
+    return result.stdout
+
+
+def preflight(scope: dict, runtime) -> dict:
+    result = {'native_profile_started': True, 'business_effects': 0}
+    if sys.platform != 'darwin':
+        return result
+    known = {'git_runtime': runtime}
+    executable = _git_executable(scope, known)
+    # Existing installed package read capability; the target is still absent.
+    # No additional native directory grants or filesystem writes are needed.
+    with directory(Path(__file__).resolve().parent) as metadata:
+        raw = _run_git((executable, '--version'), metadata)
+    _git_executable(scope, known)
+    if not raw.startswith(b'git version ') or len(raw.splitlines()) != 1:
+        raise BootstrapError('BOOTSTRAP_GIT_RUNTIME_RECEIPT_INVALID', 409)
+    return {**result, 'git_runtime': runtime, 'git_version_sha256': digest(raw)}
+
+
+def _git(root: Path, *args: str, known: dict, scope: dict, input_bytes: bytes | None = None,
+         initializing_files: dict | None = None) -> bytes:
+    command = (_git_executable(scope, known), "--git-dir=.", "--work-tree="+str(root), "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
         "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "protocol.allow=never",
         "-c", "diff.autoRefreshIndex=false", "-c", "gc.auto=0", "-c", "gc.autoPackLimit=0",
         "-c", "maintenance.auto=false", *args)
@@ -250,18 +329,21 @@ def _git(root: Path, *args: str, known: dict, input_bytes: bytes | None = None) 
                 raise BootstrapError("BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN", 409)
             # This dedicated worker is single-threaded; fchdir in its forked
             # child retains the validated inode through exec without a path race.
-            result = subprocess.run(command, preexec_fn=lambda: os.fchdir(metadata), pass_fds=(metadata,),
-                env=child_environment(), input=input_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                timeout=5, check=False)
+            # Recheck after the held target/metadata identities and immediately
+            # before execution. Same-owner hostile binary swaps are outside
+            # the explicitly qualified trusted-host boundary.
+            _git_executable(scope, known)
+            if initializing_files is not None:
+                verify_files(scope, known, initializing_files, git=True)
+                expected = scope['git_staging_identity']
+                if (list(identity(os.fstat(metadata))) != expected or os.listdir(metadata)
+                        or list(identity(os.stat('.git', dir_fd=parent, follow_symlinks=False))) != expected):
+                    raise BootstrapError('BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN', 409)
+            raw = _run_git(command, metadata, input_bytes)
         finally:
             os.close(metadata)
-    if result.returncode:
-        # Original stderr is private step evidence, not a public error string.
-        sys.stderr.buffer.write(result.stderr[:65536])
-        raise BootstrapError("BOOTSTRAP_LOCAL_GIT_FAILED", 409)
-    if len(result.stdout) > 262144:
-        raise BootstrapError("BOOTSTRAP_GIT_OUTPUT_LIMIT", 409)
-    return result.stdout
+    _git_executable(scope, known)
+    return raw
 
 
 def _git_root(scope: dict) -> Path:
@@ -318,13 +400,34 @@ def git_initialize(scope: dict, known: dict, files: dict, *, prepared_parent_fd:
     if known.get("git_identity"):
         _git_guard(scope, known)
         return {k: known[k] for k in ("git_identity", "git_config_digest")}
-    verify_files(scope, known, files, git=False)
-    metadata_scope = {**scope, "workspace_root": str(_git_root(scope)), "root_identity": known["target_identity"],
-        "target_name": ".git", "staging_path": scope["git_staging_path"], "staging_identity": scope["git_staging_identity"],
-        "prepared_directory_identities": {}}
-    claim = create(metadata_scope, prepared_parent_fd=prepared_parent_fd)
+    recovered_empty = os.path.lexists(_git_root(scope)/'.git')
+    if recovered_empty:
+        # A failed original init may have published its granted empty inode
+        # before the tool shim timed out. This is not generic Git adoption:
+        # only that exact capability, still empty, can enter fixed Git init.
+        verify_files(scope, known, files, git=True)
+        with target(scope, known) as parent:
+            metadata = os.open('.git', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                expected = scope['git_staging_identity']
+                if (list(identity(os.fstat(metadata))) != expected or os.listdir(metadata)
+                        or list(identity(os.stat('.git', dir_fd=parent, follow_symlinks=False))) != expected):
+                    raise BootstrapError('BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN', 409)
+                verify_files(scope, known, files, git=True)
+                if os.listdir(metadata):
+                    raise BootstrapError('BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN', 409)
+                claim = {'target_identity': expected}
+            finally:
+                os.close(metadata)
+    else:
+        verify_files(scope, known, files, git=False)
+        metadata_scope = {**scope, "workspace_root": str(_git_root(scope)), "root_identity": known["target_identity"],
+            "target_name": ".git", "staging_path": scope["git_staging_path"], "staging_identity": scope["git_staging_identity"],
+            "prepared_directory_identities": {}}
+        claim = create(metadata_scope, prepared_parent_fd=prepared_parent_fd)
     initializing = {**known, "git_identity": claim["target_identity"]}
-    _git(_git_root(scope), "-c", "init.templateDir=", "init", "--initial-branch=main", known=initializing)
+    _git(_git_root(scope), "-c", "init.templateDir=", "init", "--initial-branch=main", known=initializing,
+        scope=scope, initializing_files=files)
     with target(scope, known) as fd:
         gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
@@ -333,7 +436,8 @@ def git_initialize(scope: dict, known: dict, files: dict, *, prepared_parent_fd:
             _, config_digest = selected_bytes(gitfd, "config", maximum=65536, deadline=time.monotonic()+2)
             if identity(os.stat(".git", dir_fd=fd, follow_symlinks=False)) != identity(os.fstat(gitfd)):
                 raise BootstrapError("BOOTSTRAP_GIT_OWNERSHIP_UNCERTAIN", 409)
-            return {"git_identity": claim["target_identity"], "git_config_digest": config_digest}
+            return {"git_identity": claim["target_identity"], "git_config_digest": config_digest,
+                'recovered_original_empty_git_capability': recovered_empty}
         finally:
             os.close(gitfd)
 
@@ -356,7 +460,7 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
         node[parts[-1]] = expected
         expected_blobs.append(expected)
         blob_commands.append(b"blob\nmark :"+str(mark).encode()+b"\ndata "+str(len(raw)).encode()+b"\n"+raw+b"\nget-mark :"+str(mark).encode()+b"\n")
-    actual_blobs = _git(root, "fast-import", "--quiet", "--done", known=known,
+    actual_blobs = _git(root, "fast-import", "--quiet", "--done", known=known, scope=scope,
         input_bytes=b"".join(blob_commands)+b"done\n").decode().splitlines()
     if actual_blobs != expected_blobs:
         raise BootstrapError("BOOTSTRAP_BLOB_CONFLICT", 409)
@@ -377,10 +481,10 @@ def prepare_commit(scope: dict, known: dict, files: dict, accepted_at: int) -> d
         expected_trees.append(object_id)
         return object_id
     tree = plan_tree(hierarchy)
-    actual_trees = _git(root, "mktree", "--batch", "-z", known=known, input_bytes=b"".join(tree_commands)).decode().splitlines()
+    actual_trees = _git(root, "mktree", "--batch", "-z", known=known, scope=scope, input_bytes=b"".join(tree_commands)).decode().splitlines()
     if actual_trees != expected_trees:
         raise BootstrapError("BOOTSTRAP_TREE_CONFLICT", 409)
-    _git(root, "read-tree", tree, known=known)
+    _git(root, "read-tree", tree, known=known, scope=scope)
     declaration = b"tree " + tree.encode() + b"\nauthor Engineering Platform Bootstrap <bootstrap@localhost> "
     author = str(accepted_at).encode() + b" +0000"
     raw = declaration + author + b"\ncommitter Engineering Platform Bootstrap <bootstrap@localhost> " + author
@@ -395,10 +499,10 @@ def commit_object(scope: dict, known: dict) -> dict:
     root = _git_root(scope)
     object_path = root / ".git/objects" / known["commit"][:2] / known["commit"][2:]
     if os.path.lexists(object_path):
-        if _git(root, "cat-file", "commit", known["commit"], known=known) != raw:
+        if _git(root, "cat-file", "commit", known["commit"], known=known, scope=scope) != raw:
             raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
         return {"commit_object": known["commit"], "recovered_existing_object": True}
-    actual = _git(root, "hash-object", "-t", "commit", "-w", "--stdin", known=known, input_bytes=raw).decode().strip()
+    actual = _git(root, "hash-object", "-t", "commit", "-w", "--stdin", known=known, scope=scope, input_bytes=raw).decode().strip()
     if actual != known["commit"]:
         raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
     return {"commit_object": actual}
@@ -407,16 +511,16 @@ def commit_object(scope: dict, known: dict) -> dict:
 def commit_ref(scope: dict, known: dict) -> dict:
     _git_guard(scope, known)
     root = _git_root(scope)
-    raw = _git(root, "cat-file", "commit", known["commit"], known=known)
+    raw = _git(root, "cat-file", "commit", known["commit"], known=known, scope=scope)
     if raw != known["commit_utf8"].encode():
         raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
     reference = root / ".git/refs/heads/main"
     if os.path.lexists(reference):
-        if _git(root, "rev-parse", "refs/heads/main", known=known).decode().strip() != known["commit"]:
+        if _git(root, "rev-parse", "refs/heads/main", known=known, scope=scope).decode().strip() != known["commit"]:
             raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
         return {"commit_ref": known["commit"], "recovered_existing_ref": True}
     # Creation-only CAS; an unrelated concurrent ref is never overwritten.
-    _git(root, "update-ref", "refs/heads/main", known["commit"], "0"*40, known=known)
+    _git(root, "update-ref", "refs/heads/main", known["commit"], "0"*40, known=known, scope=scope)
     return {"commit_ref": known["commit"]}
 
 
@@ -425,11 +529,11 @@ def verify_commit(scope: dict, known: dict, files: dict) -> dict:
     verify_files(scope, known, files, git=True)
     before = git_snapshot(scope, known)
     root = _git_root(scope)
-    if _git(root, "rev-parse", "HEAD", known=known).decode().strip() != known["commit"]:
+    if _git(root, "rev-parse", "HEAD", known=known, scope=scope).decode().strip() != known["commit"]:
         raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
-    if _git(root, "cat-file", "commit", known["commit"], known=known) != known["commit_utf8"].encode():
+    if _git(root, "cat-file", "commit", known["commit"], known=known, scope=scope) != known["commit_utf8"].encode():
         raise BootstrapError("BOOTSTRAP_COMMIT_CONFLICT", 409)
-    rows = _git(root, "ls-tree", "-rz", "--full-tree", known["commit"], known=known).split(b"\0")
+    rows = _git(root, "ls-tree", "-rz", "--full-tree", known["commit"], known=known, scope=scope).split(b"\0")
     observed = {}
     for row in filter(None, rows):
         info, name = row.split(b"\t", 1)
@@ -438,9 +542,9 @@ def verify_commit(scope: dict, known: dict, files: dict) -> dict:
         if mode != "100644" or kind != "blob" or name not in files:
             raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
         observed[name] = object_id
-    if set(observed) != set(files) or _git(root, "rev-parse", "HEAD^{tree}", known=known).decode().strip() != known["tree"]:
+    if set(observed) != set(files) or _git(root, "rev-parse", "HEAD^{tree}", known=known, scope=scope).decode().strip() != known["tree"]:
         raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
-    batch = _git(root, "cat-file", "--batch", known=known,
+    batch = _git(root, "cat-file", "--batch", known=known, scope=scope,
         input_bytes=b"".join(observed[name].encode()+b"\n" for name in sorted(files)))
     for name in sorted(files):
         header, batch = batch.split(b"\n", 1)
@@ -451,7 +555,7 @@ def verify_commit(scope: dict, known: dict, files: dict) -> dict:
             raise BootstrapError("BOOTSTRAP_COMMITTED_TREE_CONFLICT", 409)
         batch = batch[size+1:]
         observed[name] = digest(files[name])
-    if batch or _git(root, "diff-index", "--cached", "--name-only", known["commit"], known=known):
+    if batch or _git(root, "diff-index", "--cached", "--name-only", known["commit"], known=known, scope=scope):
         raise BootstrapError("BOOTSTRAP_COMMITTED_INDEX_CONFLICT", 409)
     declaration = parse_repository_attachment(load(files[".engineering-platform/repository.json"]))
     if before != git_snapshot(scope, known):
@@ -470,7 +574,7 @@ def main() -> int:
         if original.bundle_digest != scope["bundle_digest"]:
             raise BootstrapError("BOOTSTRAP_WORKER_BINDING_CONFLICT", 409)
         functions = {
-            "PREFLIGHT": lambda: {"native_profile_started": True, "business_effects": 0},
+            "PREFLIGHT": lambda: preflight(scope, job.get('git_runtime')),
             "CREATE_TARGET": lambda: create(scope),
             "WRITE_FILES": lambda: write_files(scope, known, original.files),
             "VALIDATE_DOCS": lambda: validate_documents(scope, known, original.files, original.manifest_digest),
@@ -493,7 +597,7 @@ def main() -> int:
         result = functions[step]()
         print(canonical({"state": "STEP_COMPLETED", "step": step, "result": result}).decode(), end="", flush=True)
         return 0
-    except (BootstrapError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (BootstrapError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, ExceptionGroup) as error:
         # This stream is the owning private step evidence. Preserve the actual
         # failure at occurrence, never reconstruct missing historical stderr.
         traceback.print_exc(file=sys.stderr)

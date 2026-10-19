@@ -82,7 +82,7 @@ class Case:
         self.evidence = args.output/name
         self.evidence.mkdir(mode=0o700)
         write_private(self.root/'.qualification-owner.json', {
-            'assignment': 'L2-GENESIS-LOCAL-BOOTSTRAP-V1-20261016', 'source': args.source,
+            'assignment': getattr(args, 'assignment', 'L2-GENESIS-LOCAL-BOOTSTRAP-V1-20261016'), 'source': args.source,
             'uid': os.getuid(), 'identity': [self.root.stat().st_dev, self.root.stat().st_ino]})
         self.env = {k: v for k, v in os.environ.items() if k not in {'PYTHONPATH', 'PYTHONHOME'}}
         self.env.update(PATH=str(args.python.parent)+':'+str(args.native/'bin')+':/usr/bin:/bin',

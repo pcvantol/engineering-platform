@@ -25,6 +25,7 @@ def main() -> int:
     for name in ("python", "native", "bundle", "validator", "wheel", "output", "recipient"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--source", required=True)
+    parser.add_argument("--assignment", default="L2-GENESIS-MACOS-PROCESS-GROUP-CLOSURE-V1-20261019")
     parser.add_argument("--wheel-sha256", required=True)
     parser.add_argument("--root-prefix", required=True)
     parser.add_argument("--case", choices=("concurrency", "before-register", "lost-success"), default="before-register")

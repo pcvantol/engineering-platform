@@ -139,14 +139,19 @@ class OwningBoundaryTests(unittest.TestCase):
 
     def test_worker_protocol_requires_exact_original_bundle_step_and_fresh_permit(self):
         from engineering_platform import genesis_worker as worker
-        job = {'scope': {'bundle_digest': contract.bundle(self.bundle).bundle_digest}, 'known': {},
+        with authority.store(self.data) as db:
+            _, scope = authority.authenticate(db, self.grant['credential'], self.headers)
+        from engineering_platform import genesis_git_runtime
+        runtime = (genesis_git_runtime.capture(operation_id=scope['operation_id'], host_id=scope['host_id'])
+            if sys.platform == 'darwin' else None)
+        job = {'scope': scope, 'known': {}, 'git_runtime': runtime,
                'step': 'PREFLIGHT', 'bundle': self.bundle, 'accepted_at': 1792137600}
         for step, bound, permit, expected in (('PREFLIGHT', job['scope']['bundle_digest'], b'EXECUTE\n', 0),
                 ('PREFLIGHT', job['scope']['bundle_digest'], b'NO\n', 1),
                 ('UNKNOWN', job['scope']['bundle_digest'], b'EXECUTE\n', 1),
                 ('PREFLIGHT', '0'*64, b'EXECUTE\n', 1)):
             value = deepcopy(job); value['step'] = step; value['scope']['bundle_digest'] = bound
-            output, errors = io.StringIO(), io.StringIO()
+            output, errors = io.StringIO(), io.TextIOWrapper(io.BytesIO())
             input_stream = io.TextIOWrapper(io.BytesIO(contract.canonical(value)+permit))
             with patch.object(sys, 'stdin', input_stream), redirect_stdout(output), patch.object(sys, 'stderr', errors):
                 self.assertEqual(worker.main(), expected)
@@ -164,7 +169,7 @@ class OwningBoundaryTests(unittest.TestCase):
                 'raw=(json.dumps(j,sort_keys=True,ensure_ascii=False,separators=(",",":"))+"\\n").encode(); '
                 'print(json.dumps({"state":"STEP_READY","job_digest":hashlib.sha256(raw).hexdigest()}),flush=True); '
                 'assert sys.stdin.buffer.readline()==b"EXECUTE\\n"; '
-                'print(json.dumps({"state":"STEP_COMPLETED","step":j["step"],"result":{"business_effects":0}}),flush=True)')
+                'print(json.dumps({"state":"STEP_COMPLETED","step":j["step"],"result":{"business_effects":0,"git_runtime":j.get("git_runtime"),"git_version_sha256":"0"*64}}),flush=True)')
         original_popen = subprocess.Popen
         def initialized_child(*args, **kwargs):
             # Wait for this modeled worker's actual exec before returning its
