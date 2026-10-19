@@ -228,13 +228,16 @@ def main() -> int:
             selected = (selection/'usr/bin/git').resolve(strict=True)
             if not any(selected.is_relative_to(prefix) for prefix in (Path('/Applications'), Path('/Library/Developer'))):
                 raise RuntimeError('Unexpected selected toolchain placement')
+            trusted_owners = {0, os.getuid()}
             for node in selected.parents:
                 info = node.stat()
-                if info.st_uid != 0 or info.st_mode & 0o002: raise RuntimeError('Untrusted selected toolchain parent')
+                if (info.st_uid not in trusted_owners or
+                        info.st_mode & (0o002 if info.st_uid == 0 else 0o022)):
+                    raise RuntimeError('Untrusted selected toolchain parent')
             info = selected.stat()
-            if (info.st_uid != 0 or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode)
+            if (info.st_uid not in trusted_owners or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode)
                     or not os.access(selected, os.X_OK) or selected.name != 'git'):
-                raise RuntimeError('Actual root-owned non-shim Git required')
+                raise RuntimeError('Actual root-or-current-owner non-shim Git required')
             selected_digest=hashlib.sha256(selected.read_bytes()).hexdigest()
             selected_identity=tuple(getattr(info,key) for key in ('st_dev','st_ino','st_uid','st_gid','st_mode','st_size','st_mtime_ns','st_ctime_ns'))
             append_private(args.output/'private'/'selected-git.jsonl', {'path':str(selected),'device':info.st_dev,'inode':info.st_ino,
