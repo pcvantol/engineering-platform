@@ -4,7 +4,7 @@ name: Genesis process-group host probe (diagnostic only)
 # All normal owning delivery/authorization checks remain separately required.
 on:
   push:
-    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*', 'l2-genesis-git-inventory-*', 'l2-genesis-git-cold-*']
+    tags: ['l2-genesis-group-probe-*', 'l2-genesis-git-probe-*', 'l2-genesis-git-inventory-*', 'l2-genesis-git-cold-*', 'l2-genesis-product-probe-*']
 
 permissions:
   contents: read
@@ -20,6 +20,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.14'}
       - name: Original qualified wheel and separate noneditable installation
+        if: "!startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')"
         env:
           BASE_SOURCE: 4d0c0461d7a5ec7fb7a50aa42f775cc4be09faa5
         run: |
@@ -52,6 +53,45 @@ jobs:
           path=Path(os.environ['RUNNER_TEMP'])/'original-validator.py'
           path.write_bytes(matches[0]);path.chmod(0o600)
           PY
+      - name: Current exact committed candidate and separate noneditable installation
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test ! -e /private/tmp/gpc1
+          test ! -e /private/tmp/npc1
+          python tools/qualification/build_platform_wheel.py --source-root . --version 2.3.124 --wheel-directory "$RUNNER_TEMP/ep-candidate-wheel"
+          python -m venv /private/tmp/gpc1
+          /private/tmp/gpc1/bin/python -m pip install --no-deps "$RUNNER_TEMP/ep-candidate-wheel/engineering_platform-2.3.124-py3-none-any.whl"
+          /private/tmp/gpc1/bin/python -m pip install jsonschema==4.25.1
+          npm install --prefix /private/tmp/npc1 --ignore-scripts --no-audit --no-fund @openai/codex@0.160.1
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          root=Path('/private/tmp/npc1')
+          found=[p for p in (root/'node_modules/@openai').rglob('codex') if '/vendor/' in str(p) and p.is_file() and os.access(p,os.X_OK)]
+          assert len(found)==1
+          (root/'bin').mkdir(); (root/'bin/codex').symlink_to(found[0])
+          bundle=json.loads(Path('tests/engineering/fixtures/genesis_local/authority-bundle.json').read_text())
+          matches=[value['utf8'].encode() for name,value in bundle['files'].items() if name.endswith('/validate.py')]
+          assert len(matches)==1
+          assert hashlib.sha256(matches[0]).hexdigest()=='3ce4eca67c659d65ea2df70439d7f61bc8e4eb16b3d4b64b397d7fc3bdc16ae2'
+          path=Path(os.environ['RUNNER_TEMP'])/'original-validator.py'
+          path.write_bytes(matches[0]);path.chmod(0o600)
+          PY
+      - name: Small exact-candidate installed chain with unchanged group detector
+        if: startsWith(github.ref, 'refs/tags/l2-genesis-product-probe-')
+        run: |
+          set -euo pipefail
+          WHEEL="$RUNNER_TEMP/ep-candidate-wheel/engineering_platform-2.3.124-py3-none-any.whl"
+          SHA=$(shasum -a 256 "$WHEEL" | cut -d' ' -f1)
+          /private/tmp/gpc1/bin/python -I tools/qualification/genesis_process_group_host_probe.py \
+            --python /private/tmp/gpc1/bin/python --native /private/tmp/npc1 \
+            --bundle tests/engineering/fixtures/genesis_local/authority-bundle.json \
+            --validator "$RUNNER_TEMP/original-validator.py" \
+            --wheel "$WHEEL" --wheel-sha256 "$SHA" --source "$GITHUB_SHA" --root-prefix pgp \
+            --output "$RUNNER_TEMP/ep-group-probe" --case before-register \
+            --recipient tools/qualification/fixtures/genesis-process-group-evidence-recipient.pem
       - name: Small original installed chain with unchanged group detector
         if: startsWith(github.ref, 'refs/tags/l2-genesis-group-probe-')
         run: |
