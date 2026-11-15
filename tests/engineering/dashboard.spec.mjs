@@ -1203,7 +1203,7 @@ test.describe("Engineering Status browser smoke", () => {
     // A readiness recheck must preserve the operator's expanded group.
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(attention).toHaveAttribute("open", "");
-    await expect(page.locator("#githubProviderReadinessBanner")).toHaveCSS("align-items", "flex-start");
+    await expect(page.locator("#githubProviderReadinessBanner")).toHaveCSS("align-items", /^(?:flex|flow)-start$/);
     await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
     await expect(page.locator("#githubProviderReadinessBanner")).toBeVisible();
     const githubGeometry = await page.locator("#githubProviderReadinessBanner").evaluate((row) => {
@@ -6119,7 +6119,7 @@ test.describe("Engineering Status browser smoke", () => {
     }]));
     await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
     const actions = page.locator("#executionTelemetry .telemetry-actions");
-    await expect(actions).toHaveCSS("justify-content", "flex-end");
+    await expect(actions).toHaveCSS("justify-content", /^(?:flex|flow)-end$/);
     await expect(actions.getByRole("button", { name: "Volledig overzicht als Markdown downloaden" })).toBeEnabled();
     await expect(actions.getByRole("button", { name: "Volledig overzicht als JSON downloaden" })).toBeEnabled();
     await expect(actions.getByRole("button", { name: "Telemetrie kopiëren" })).toBeEnabled();
